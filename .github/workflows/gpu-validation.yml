@@ -37,6 +37,7 @@ jobs:
           $code = $LASTEXITCODE
           Write-Host $output
           if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
+          exit 0
       - name: Run patched tests with a CUDA reference implementation
         run: |
           Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
