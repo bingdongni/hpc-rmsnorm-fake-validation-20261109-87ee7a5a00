@@ -1,45 +1,59 @@
-name: RMSNorm fake output validation
-
+name: Memory prefilter literal validation
 on:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
   test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
     env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+      SHELLM_ENV: local
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          repository: laude-institute/headlong
+          ref: 2e39a3f94fb9acbd0d73f6b0aecc9f83dc14547e
+          path: baseline
           persist-credentials: false
-      - name: Verify source hashes and CUDA device
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: bingdongni/headlong
+          ref: 2b0afc13e6320d554a06c4c0310612eb6b72372b
+          path: patched
+          persist-credentials: false
+      - name: Set up macOS Bash 3.2 and tools
+        if: runner.os == 'macOS'
         run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
+          brew list coreutils >/dev/null 2>&1 || brew install -q coreutils
+          brew list jq >/dev/null 2>&1 || brew install -q jq
+          mkdir -p "$RUNNER_TEMP/bash32"
+          ln -s /bin/bash "$RUNNER_TEMP/bash32/bash"
+          echo "$RUNNER_TEMP/bash32" >> "$GITHUB_PATH"
+          echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
+      - name: Verify pinned sources
         run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
+          python3 -c "import hashlib,pathlib; pairs=[('patched/bin/mem','e0fa83674bd11f140db8a27b3d6e948be87ab210761a52a3980914db2bdeb7c0'),('patched/tests/test_mem_prefilter_literals.sh','d263542126200289af11153bbeee6371efb7870abfab2fbc1115489225c92a02'),('baseline/bin/mem','b0c49a6eaae92f2d5b888f84a4c5cd68d1837e5fe39263603f7a25f5bcbc9d92')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
+          bash --version | sed -n '1p'
+          echo 'Patched commit: 2b0afc13e6320d554a06c4c0310612eb6b72372b'
+      - name: Confirm baseline failure
         run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+          cp patched/tests/test_mem_prefilter_literals.sh baseline/tests/
+          cd baseline
+          set +e
+          output=$(bash tests/test_mem_prefilter_literals.sh 2>&1)
+          code=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$code" -ne 0
+          printf '%s\n' "$output" | grep -F 'FAIL literal query api.example.com'
+      - name: Run regression and existing memory tests
+        working-directory: patched
+        run: |
+          bash tests/test_mem_prefilter_literals.sh
+          bash tests/test_mem_search.sh
+          bash tests/test_related_memories.sh
