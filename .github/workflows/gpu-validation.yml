@@ -1,14 +1,11 @@
-name: RMSNorm fake output validation
-
+name: Checkpoint tensor registration validation
 on:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
+  cuda:
+    runs-on: [self-hosted, Windows, X64, checkpoint-tensor-gpu-5129ad4ef9]
     timeout-minutes: 15
     defaults:
       run:
@@ -17,29 +14,68 @@ jobs:
       MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
       MASK_USER: ${{ secrets.MASK_USER }}
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          repository: MoonshotAI/checkpoint-engine
+          ref: 0ac607299eb711cdd6b164e9eba04a7ade9cf98b
+          path: baseline
           persist-credentials: false
-      - name: Verify source hashes and CUDA device
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: bingdongni/checkpoint-engine
+          ref: 8d5f2a6ad37a13a1f8556286c8971b2632495fe7
+          path: patched
+          persist-credentials: false
+      - name: Verify sources and CUDA device
         run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
+          if ((git -C baseline rev-parse HEAD) -ne '0ac607299eb711cdd6b164e9eba04a7ade9cf98b') { throw 'Wrong baseline' }
+          if ((git -C patched rev-parse HEAD) -ne '8d5f2a6ad37a13a1f8556286c8971b2632495fe7') { throw 'Wrong patch' }
+          & 'C:\PR\torchao-gpu-venv-20261109\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:', torch.cuda.get_device_name(0))"
+          if ($LASTEXITCODE -ne 0) { throw 'CUDA unavailable' }
       - name: Confirm baseline failures
         run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
+          Copy-Item -LiteralPath patched\tests\test_strided_pin_memory.py -Destination baseline\tests\test_strided_pin_memory.py
+          $env:PYTHONPATH = "C:\PR\checkpoint-engine-deps-20261109;$env:GITHUB_WORKSPACE\baseline"
+          Set-Location baseline
+          $output = & 'C:\PR\torchao-gpu-venv-20261109\Scripts\python.exe' -m pytest -q --tb=no tests\test_strided_pin_memory.py 2>&1 | Out-String
           $code = $LASTEXITCODE
           Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
+          if ($code -ne 1 -or $output -notmatch '3 failed') { throw 'Unexpected baseline result' }
           exit 0
-      - name: Run patched tests with a CUDA reference implementation
+      - name: Test PyTorch 2.6 and 2.11
         run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+          $env:PYTHONPATH = "C:\PR\checkpoint-engine-deps-20261109;$env:GITHUB_WORKSPACE\patched"
+          Set-Location patched
+          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; print('PyTorch:', torch.__version__, 'CUDA:', torch.version.cuda)"
+          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -m pytest -q tests\test_strided_pin_memory.py
+          if ($LASTEXITCODE -ne 0) { throw 'PyTorch 2.6 regression failed' }
+          & 'C:\PR\torchao-gpu-venv-20261109\Scripts\python.exe' -c "import torch; print('PyTorch:', torch.__version__, 'CUDA:', torch.version.cuda)"
+          & 'C:\PR\torchao-gpu-venv-20261109\Scripts\python.exe' -m pytest -q tests\test_strided_pin_memory.py
+          if ($LASTEXITCODE -ne 0) { throw 'PyTorch 2.11 regression failed' }
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: '3.10'
+            torch: '2.5.1'
+          - python: '3.12'
+            torch: '2.6.0'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: bingdongni/checkpoint-engine
+          ref: 8d5f2a6ad37a13a1f8556286c8971b2632495fe7
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install torch==${{ matrix.torch }} --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e '.[p2p]' pytest
+      - name: Run CPU suite
+        run: python -m pytest -q -m 'not gpu' tests
