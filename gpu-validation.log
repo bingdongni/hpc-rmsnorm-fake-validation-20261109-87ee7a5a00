@@ -1,0 +1,180 @@
+2026-11-09T03:49:53.2978140Z Current runner version: '2.338.2'
+2026-11-09T03:49:53.2984995Z Runner name: 'ephemeral-hpc-rmsnorm-gpu-retry'
+2026-11-09T03:49:53.2985827Z Runner group name: 'Default'
+2026-11-09T03:49:53.2986735Z Machine name: '***'
+2026-11-09T03:49:53.2989877Z ##[group]GITHUB_TOKEN Permissions
+2026-11-09T03:49:53.2991873Z Contents: read
+2026-11-09T03:49:53.2992332Z Metadata: read
+2026-11-09T03:49:53.2992866Z ##[endgroup]
+2026-11-09T03:49:53.2994667Z Secret source: Actions
+2026-11-09T03:49:53.2995450Z Cache mode: write
+2026-11-09T03:49:53.2996026Z Prepare workflow directory
+2026-11-09T03:49:53.3537042Z Prepare all required actions
+2026-11-09T03:49:53.3583353Z Getting action download info
+2026-11-09T03:49:55.0348868Z Download action repository 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683' (SHA:11bd71901bbe5b1630ceea73d27597364c9af683)
+2026-11-09T03:49:56.9758828Z Complete job name: test
+2026-11-09T03:49:57.1009069Z ##[group]Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+2026-11-09T03:49:57.1009950Z with:
+2026-11-09T03:49:57.1010194Z   persist-credentials: false
+2026-11-09T03:49:57.1010571Z   repository: bingdongni/hpc-rmsnorm-fake-validation-20261109-87ee7a5a00
+2026-11-09T03:49:57.1013201Z   token: ***
+2026-11-09T03:49:57.1013449Z   ssh-strict: true
+2026-11-09T03:49:57.1013702Z   ssh-user: git
+2026-11-09T03:49:57.1013953Z   clean: true
+2026-11-09T03:49:57.1014227Z   sparse-checkout-cone-mode: true
+2026-11-09T03:49:57.1014536Z   fetch-depth: 1
+2026-11-09T03:49:57.1014794Z   fetch-tags: false
+2026-11-09T03:49:57.1015064Z   show-progress: true
+2026-11-09T03:49:57.1015333Z   lfs: false
+2026-11-09T03:49:57.1015590Z   submodules: false
+2026-11-09T03:49:57.1015816Z   set-safe-directory: true
+2026-11-09T03:49:57.1016227Z env:
+2026-11-09T03:49:57.1016477Z   MASK_MACHINE: ***
+2026-11-09T03:49:57.1016716Z   MASK_USER: ***
+2026-11-09T03:49:57.1016988Z   PYTEST_DISABLE_PLUGIN_AUTOLOAD: 1
+2026-11-09T03:49:57.1017644Z   HPC_VALIDATION_ROOT: C:\PR\github-gpu-runner-20261106\_work\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00
+2026-11-09T03:49:57.1018285Z ##[endgroup]
+2026-11-09T03:49:57.6129093Z Syncing repository: bingdongni/hpc-rmsnorm-fake-validation-20261109-87ee7a5a00
+2026-11-09T03:49:57.6130547Z ##[group]Getting Git version info
+2026-11-09T03:49:57.6131362Z Working directory is 'C:\PR\github-gpu-runner-20261106\_work\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00'
+2026-11-09T03:49:57.6305063Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" version
+2026-11-09T03:49:57.6632945Z git version 2.56.0.windows.4
+2026-11-09T03:49:57.6669335Z ##[endgroup]
+2026-11-09T03:49:57.6683814Z Copying 'C:\Users\***\.gitconfig' to 'C:\PR\github-gpu-runner-20261106\_work\_temp\65242699-b910-48fb-a043-c9790796973b\.gitconfig'
+2026-11-09T03:49:57.6704511Z Temporarily overriding HOME='C:\PR\github-gpu-runner-20261106\_work\_temp\65242699-b910-48fb-a043-c9790796973b' before making global git config changes
+2026-11-09T03:49:57.6705412Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-09T03:49:57.6713498Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" config --global --add safe.directory C:\PR\github-gpu-runner-20261106\_work\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00
+2026-11-09T03:49:57.7084789Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" config --local --get remote.origin.url
+2026-11-09T03:49:57.7420433Z https://github.com/bingdongni/hpc-rmsnorm-fake-validation-20261109-87ee7a5a00
+2026-11-09T03:49:57.7464076Z ##[group]Removing previously created refs, to avoid conflicts
+2026-11-09T03:49:57.7473577Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" rev-parse --symbolic-full-name --verify --quiet HEAD
+2026-11-09T03:49:57.7774229Z refs/heads/main
+2026-11-09T03:49:57.7815567Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" checkout --detach
+2026-11-09T03:49:57.8918637Z HEAD is now at e70437e Add pinned RMSNorm fake output validation
+2026-11-09T03:49:57.9701011Z ##[endgroup]
+2026-11-09T03:49:57.9708169Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" submodule status
+2026-11-09T03:49:58.7044403Z ##[group]Cleaning the repository
+2026-11-09T03:49:58.7054038Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" clean -ffdx
+2026-11-09T03:49:58.7391179Z Removing .pytest_cache/
+2026-11-09T03:49:58.7391563Z Removing __pycache__/
+2026-11-09T03:49:58.7391832Z Removing build/
+2026-11-09T03:49:58.7392104Z Removing tests/__pycache__/
+2026-11-09T03:49:58.7436178Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" reset --hard HEAD
+2026-11-09T03:49:58.7823953Z HEAD is now at e70437e Add pinned RMSNorm fake output validation
+2026-11-09T03:49:58.7855251Z ##[endgroup]
+2026-11-09T03:49:58.7860466Z ##[group]Disabling automatic garbage collection
+2026-11-09T03:49:58.7867367Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" config --local gc.auto 0
+2026-11-09T03:49:58.8212963Z ##[endgroup]
+2026-11-09T03:49:58.8213506Z ##[group]Setting up auth
+2026-11-09T03:49:58.8224451Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-11-09T03:49:58.8585679Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-11-09T03:49:59.5195516Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-09T03:49:59.5561138Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-11-09T03:50:00.2542186Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" config --local http.https://github.com/.extraheader "AUTHORIZATION: basic ***"
+2026-11-09T03:50:00.3100182Z ##[endgroup]
+2026-11-09T03:50:00.3100968Z ##[group]Fetching the repository
+2026-11-09T03:50:00.3115912Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +56f2d5508f0e5b239671a0191a6a679e9e1c23db:refs/remotes/origin/main
+2026-11-09T03:50:09.7412402Z From https://github.com/bingdongni/hpc-rmsnorm-fake-validation-20261109-87ee7a5a00
+2026-11-09T03:50:09.7413137Z  + e70437e...56f2d55 56f2d5508f0e5b239671a0191a6a679e9e1c23db -> origin/main  (forced update)
+2026-11-09T03:50:09.7458154Z ##[endgroup]
+2026-11-09T03:50:09.7459497Z ##[group]Determining the checkout info
+2026-11-09T03:50:09.7459948Z ##[endgroup]
+2026-11-09T03:50:09.7470334Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" sparse-checkout disable
+2026-11-09T03:50:09.8084757Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" config --local --unset-all extensions.worktreeConfig
+2026-11-09T03:50:09.8465924Z ##[group]Checking out the ref
+2026-11-09T03:50:09.8474287Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" checkout --progress --force -B main refs/remotes/origin/main
+2026-11-09T03:50:09.9370389Z Previous HEAD position was e70437e Add pinned RMSNorm fake output validation
+2026-11-09T03:50:09.9968128Z Switched to and reset branch 'main'
+2026-11-09T03:50:10.0034736Z branch 'main' set up to track 'origin/main'.
+2026-11-09T03:50:10.0035573Z Your branch is up to date with 'origin/main'.
+2026-11-09T03:50:10.0078857Z ##[endgroup]
+2026-11-09T03:50:10.0508399Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" log -1 --format=%H
+2026-11-09T03:50:10.0835044Z 56f2d5508f0e5b239671a0191a6a679e9e1c23db
+2026-11-09T03:50:10.0878669Z ##[group]Removing auth
+2026-11-09T03:50:10.0886666Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-11-09T03:50:10.1270075Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-11-09T03:50:10.8566680Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-09T03:50:10.8915036Z http.https://github.com/.extraheader
+2026-11-09T03:50:10.8957179Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" config --local --unset-all http.https://github.com/.extraheader
+2026-11-09T03:50:10.9365364Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-11-09T03:50:11.7112463Z ##[endgroup]
+2026-11-09T03:50:11.7485925Z ##[group]Run & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
+2026-11-09T03:50:11.7490463Z & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
+2026-11-09T03:50:11.7493389Z if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
+2026-11-09T03:50:11.7493854Z Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
+2026-11-09T03:50:11.7494321Z Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
+2026-11-09T03:50:11.7495187Z & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
+2026-11-09T03:50:11.7495992Z if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
+2026-11-09T03:50:11.7537957Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -command ". '{0}'"
+2026-11-09T03:50:11.7538327Z env:
+2026-11-09T03:50:11.7538631Z   MASK_MACHINE: ***
+2026-11-09T03:50:11.7538842Z   MASK_USER: ***
+2026-11-09T03:50:11.7539036Z   PYTEST_DISABLE_PLUGIN_AUTOLOAD: 1
+2026-11-09T03:50:11.7539659Z   HPC_VALIDATION_ROOT: C:\PR\github-gpu-runner-20261106\_work\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00
+2026-11-09T03:50:11.7540254Z ##[endgroup]
+2026-11-09T03:50:12.3607111Z Source hashes verified
+2026-11-09T03:50:12.4047480Z Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce
+2026-11-09T03:50:12.4053563Z Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901
+2026-11-09T03:50:18.0947659Z GPU: NVIDIA GeForce RTX 4060 Laptop GPU PyTorch: 2.6.0+cu124 CUDA: 12.4
+2026-11-09T03:50:18.4789640Z ##[group]Run $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
+2026-11-09T03:50:18.4790362Z $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
+2026-11-09T03:50:18.4791043Z $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
+2026-11-09T03:50:18.4791549Z $code = $LASTEXITCODE
+2026-11-09T03:50:18.4791776Z Write-Host $output
+2026-11-09T03:50:18.4792182Z if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
+2026-11-09T03:50:18.4792595Z exit 0
+2026-11-09T03:50:18.4826511Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -command ". '{0}'"
+2026-11-09T03:50:18.4826895Z env:
+2026-11-09T03:50:18.4827300Z   MASK_MACHINE: ***
+2026-11-09T03:50:18.4827529Z   MASK_USER: ***
+2026-11-09T03:50:18.4827774Z   PYTEST_DISABLE_PLUGIN_AUTOLOAD: 1
+2026-11-09T03:50:18.4828389Z   HPC_VALIDATION_ROOT: C:\PR\github-gpu-runner-20261106\_work\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00
+2026-11-09T03:50:18.4828987Z ##[endgroup]
+2026-11-09T03:50:27.4928797Z FFF.                                                                     [100%]
+2026-11-09T03:50:27.4929265Z =========================== short test summary info ===========================
+2026-11-09T03:50:27.4934059Z FAILED tests/test_normalization.py::test_fused_rmsnorm_with_scale_fake[False] - TypeError: Object of type 'FakeTensor' is not an instance of 'sequence'
+2026-11-09T03:50:27.4935114Z FAILED tests/test_normalization.py::test_fused_rmsnorm_with_scale_fake[True] - AssertionError: assert torch.float32 == torch.float8_e4m3fn
+2026-11-09T03:50:27.4936108Z  +  where torch.float32 = FakeTensor(..., device='cuda:0', size=(4, 320)).dtype
+2026-11-09T03:50:27.4937688Z FAILED tests/test_normalization.py::test_fused_rmsnorm_with_scale_compiled[False] - torch._dynamo.exc.TorchRuntimeError: Failed running call_function hpc.fused_rmsnorm_with_scale(*(FakeTensor(..., device='cuda:0', size=(2, 320), dtype=torch.bfloat16), FakeTensor(..., device='cuda:0', size=(320,), dtype=torch.bfloat16), FakeTensor(..., device='cuda:0', size=(1,)), 1e-06, False), **{}):
+2026-11-09T03:50:27.4939219Z Object of type 'FakeTensor' is not an instance of 'sequence'
+2026-11-09T03:50:27.4939488Z 
+2026-11-09T03:50:27.4939609Z from user code:
+2026-11-09T03:50:27.4940472Z    File "C:\PR\github-gpu-runner-20261106\_work\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00\tests\test_normalization.py", line 61, in run
+2026-11-09T03:50:27.4941428Z     return hpc.normalization.fused_rmsnorm_with_scale(
+2026-11-09T03:50:27.4942368Z   File "C:\PR\github-gpu-runner-20261106\_work\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00\baseline_normalization.py", line 38, in fused_rmsnorm_with_scale
+2026-11-09T03:50:27.4943338Z     output_fp8, output_fp32, output_fp8_scale2 = torch.ops.hpc.fused_rmsnorm_with_scale(
+2026-11-09T03:50:27.4943629Z 
+2026-11-09T03:50:27.4943862Z Set TORCH_LOGS="+dynamo" and TORCHDYNAMO_VERBOSE=1 for more information
+2026-11-09T03:50:27.4944111Z 
+2026-11-09T03:50:27.4944114Z 
+2026-11-09T03:50:27.4944327Z You can suppress this exception and fall back to eager by setting:
+2026-11-09T03:50:27.4944666Z     import torch._dynamo
+2026-11-09T03:50:27.4944942Z     torch._dynamo.config.suppress_errors = True
+2026-11-09T03:50:27.4945243Z 3 failed, 1 passed in 2.71s
+2026-11-09T03:50:27.4945386Z 
+2026-11-09T03:50:27.5371192Z ##[group]Run Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
+2026-11-09T03:50:27.5371754Z Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
+2026-11-09T03:50:27.5372528Z & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
+2026-11-09T03:50:27.5373814Z if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+2026-11-09T03:50:27.5418670Z shell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -command ". '{0}'"
+2026-11-09T03:50:27.5419030Z env:
+2026-11-09T03:50:27.5419321Z   MASK_MACHINE: ***
+2026-11-09T03:50:27.5419519Z   MASK_USER: ***
+2026-11-09T03:50:27.5419717Z   PYTEST_DISABLE_PLUGIN_AUTOLOAD: 1
+2026-11-09T03:50:27.5420343Z   HPC_VALIDATION_ROOT: C:\PR\github-gpu-runner-20261106\_work\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00
+2026-11-09T03:50:27.5420921Z ##[endgroup]
+2026-11-09T03:50:35.9645983Z ....                                                                     [100%]
+2026-11-09T03:50:35.9646341Z 4 passed in 2.74s
+2026-11-09T03:50:36.6067650Z Post job cleanup.
+2026-11-09T03:50:36.7323368Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" version
+2026-11-09T03:50:36.7643817Z git version 2.56.0.windows.4
+2026-11-09T03:50:36.7695445Z Copying 'C:\Users\***\.gitconfig' to 'C:\PR\github-gpu-runner-20261106\_work\_temp\9e5d5b00-6c63-4896-b92a-cf29a0cc550b\.gitconfig'
+2026-11-09T03:50:36.7715489Z Temporarily overriding HOME='C:\PR\github-gpu-runner-20261106\_work\_temp\9e5d5b00-6c63-4896-b92a-cf29a0cc550b' before making global git config changes
+2026-11-09T03:50:36.7716284Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-09T03:50:36.7724506Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" config --global --add safe.directory C:\PR\github-gpu-runner-20261106\_work\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00\hpc-rmsnorm-fake-validation-20261109-87ee7a5a00
+2026-11-09T03:50:36.8127701Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-11-09T03:50:36.8499764Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-11-09T03:50:37.5920720Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-09T03:50:37.6316583Z [command]"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-2876-0_26.1104.2876.0_x64__3k8sg7r9htsxt\dependencies\native\git\cmd\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-11-09T03:50:38.3763364Z Cleaning up orphan processes
+2026-11-09T03:50:38.4228271Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
