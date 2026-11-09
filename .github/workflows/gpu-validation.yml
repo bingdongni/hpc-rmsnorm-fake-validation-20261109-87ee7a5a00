@@ -1,15 +1,12 @@
-name: RMSNorm fake output validation
-
+name: Float8 cast configuration validation
 on:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
+  cuda:
+    runs-on: [self-hosted, Windows, X64, torchao-fp8-config-d83db03df6]
+    timeout-minutes: 20
     defaults:
       run:
         shell: powershell
@@ -17,29 +14,51 @@ jobs:
       MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
       MASK_USER: ${{ secrets.MASK_USER }}
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          repository: pytorch/ao
+          ref: 82c6889c4a33041a7023467746b6a91da3e691d1
+          path: baseline
           persist-credentials: false
-      - name: Verify source hashes and CUDA device
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: bingdongni/ao
+          ref: 2558f234bba453ca1e64c2d423147cee0aea86c9
+          path: patched
+          persist-credentials: false
+      - name: Verify source and CUDA device
         run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
+          & 'C:\PR\torchao-gpu-venv-20261109\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('patched/torchao/float8/config.py','3a4dda06df487c21de63d96e4a774fed26d9c6d00a13a0329a22d6dbd1dbf1df'),('patched/test/float8/test_config_defaults.py','6521100ec31451e18933c8022c3d770200a5a1930942e8c09738f0f7aaaf947a'),('baseline/torchao/float8/config.py','5344950f2a3e7d438ea24ccb47ccc3b7e71bc3d59d883e010569f72c7da5611a')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes().replace(b'\r\n',b'\n')).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
           if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
+          Write-Host 'Patched commit: 2558f234bba453ca1e64c2d423147cee0aea86c9'
+          & 'C:\PR\torchao-gpu-venv-20261109\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
           if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
+      - name: Confirm baseline configuration failures
         run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
+          $env:PYTHONPATH = Join-Path $env:GITHUB_WORKSPACE 'baseline'
+          $env:TORCHAO_EXPECT_ROOT = $env:PYTHONPATH
+          & 'C:\PR\torchao-gpu-venv-20261109\Scripts\python.exe' -c "import os,pathlib,torchao; assert pathlib.Path(torchao.__file__).resolve().is_relative_to(pathlib.Path(os.environ['TORCHAO_EXPECT_ROOT']).resolve()); print('Baseline import verified')"
+          if ($LASTEXITCODE -ne 0) { throw 'Baseline import verification failed' }
+          $test = Join-Path $env:GITHUB_WORKSPACE 'patched/test/float8/test_config_defaults.py'
+          $output = & 'C:\PR\torchao-gpu-venv-20261109\Scripts\python.exe' -m pytest -q --noconftest --tb=no --import-mode=importlib $test -k 'not gpu' 2>&1 | Out-String
           $code = $LASTEXITCODE
           Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
+          if ($code -ne 1 -or $output -notmatch '5 failed, 1 passed, 1 deselected') { throw 'Unexpected baseline result' }
+          $output = & 'C:\PR\torchao-gpu-venv-20261109\Scripts\python.exe' -m pytest -q --noconftest --tb=short --import-mode=importlib "${test}::test_shared_cast_config_gpu_forward_and_backward" 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Host $output
+          if ($code -ne 1 -or $output -notmatch 'Mismatched elements:' -or $output -notmatch '1 failed') { throw 'Unexpected baseline GPU result' }
           exit 0
-      - name: Run patched tests with a CUDA reference implementation
+      - name: Run patched configuration and native FP8 tests
         run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+          $env:PYTHONPATH = Join-Path $env:GITHUB_WORKSPACE 'patched'
+          $env:TORCHAO_EXPECT_ROOT = $env:PYTHONPATH
+          & 'C:\PR\torchao-gpu-venv-20261109\Scripts\python.exe' -c "import os,pathlib,torchao; assert pathlib.Path(torchao.__file__).resolve().is_relative_to(pathlib.Path(os.environ['TORCHAO_EXPECT_ROOT']).resolve()); print('Patched import verified')"
+          if ($LASTEXITCODE -ne 0) { throw 'Patched import verification failed' }
+          $test = Join-Path $env:GITHUB_WORKSPACE 'patched/test/float8/test_config_defaults.py'
+          & 'C:\PR\torchao-gpu-venv-20261109\Scripts\python.exe' -m pytest -q --noconftest --tb=short --import-mode=importlib $test
+          if ($LASTEXITCODE -ne 0) { throw 'Patched regression tests failed' }
+          $base = Join-Path $env:GITHUB_WORKSPACE 'patched/test/float8/test_base.py'
+          & 'C:\PR\torchao-gpu-venv-20261109\Scripts\python.exe' -m pytest -q --noconftest --tb=short --import-mode=importlib "${base}::TestFloat8Linear::test_repr" "${base}::TestFloat8Linear::test_mixed_precision_operands_raise"
+          if ($LASTEXITCODE -ne 0) { throw 'Existing config tests failed' }
