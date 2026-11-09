@@ -44,14 +44,12 @@ sys.modules["hpc.normalization"] = module
 spec.loader.exec_module(module)
 package.normalization = module
 
-sys.exit(
-    pytest.main(
-        [
-            "-q",
-            "--tb=no",
-            str(root / "tests" / "test_normalization.py") + "::test_fused_rmsnorm_with_scale_fake",
-            str(root / "tests" / "test_normalization.py")
-            + "::test_fused_rmsnorm_with_scale_compiled",
-        ]
-    )
-)
+tests = [
+    "-q",
+    "--tb=no",
+    str(root / "tests" / "test_normalization.py") + "::test_fused_rmsnorm_with_scale_fake",
+    str(root / "tests" / "test_normalization.py") + "::test_fused_rmsnorm_with_scale_compiled",
+]
+if os.environ.get("HPC_INCLUDE_NUMERIC") == "1":
+    tests.append(str(root / "tests" / "test_normalization.py") + "::test_fused_rmsnorm_with_scale")
+sys.exit(pytest.main(tests))
