@@ -1,0 +1,588 @@
+diff --git a/README.md b/README.md
+index c31f1d2..8187c68 100644
+--- a/README.md
++++ b/README.md
+@@ -270,6 +270,10 @@ python eval.py score --predictions ./results/judged.jsonl
+ 
+ The judge prompts used for scoring are located in `prompts/{domain}/judge_system_prompt.txt`. The world model system prompts in `prompts/{domain}/system_prompt.txt` are provided as **reference templates**; during evaluation, the system prompt from each sample's `system_str` field is used instead.
+ 
++For long runs, add `--checkpoint ./results/infer.checkpoint.jsonl` to `infer` or `--checkpoint ./results/judge.checkpoint.jsonl` to `judge`. Repeating the same command resumes completed samples without calling the model or judge again. The checkpoint must be separate from the input and final output files; it stores sample results and a hash of the inputs, evaluation settings and evaluator code, but not API keys. A mismatch or an incomplete checkpoint record stops the run without modifying the checkpoint.
++
++With a checkpoint, an inference error or exhausted judge retries stop the run so that the unfinished sample is retried on resume. Samples already lacking a model generation remain failed. If a process stops after the server handled a request but before its result was saved, resuming can repeat that request. Use separate output directories for concurrent runs; a checkpoint is locked while it is in use.
++
+ ### Evaluation Output
+ 
+ The `score` command outputs per-domain and overall results:
+diff --git a/eval/eval.py b/eval/eval.py
+index 072c7a2..1c51563 100644
+--- a/eval/eval.py
++++ b/eval/eval.py
+@@ -46,6 +46,7 @@ from lwm_eval_utils import (
+     clean_response_marker,
+     load_judge_system_prompts,
+ )
++from lwm_eval_utils.checkpoint import RunCheckpoint, checkpoint_signature
+ 
+ INVALID_VALUE = 0
+ 
+@@ -81,6 +82,7 @@ def run_inference(
+     model_name: str,
+     max_tokens: int = 32768,
+     temperature: float = 0.6,
++    on_complete=None,
+ ) -> List[Dict[str, Any]]:
+     """Run world model inference on all jobs."""
+     total = len(jobs)
+@@ -112,9 +114,15 @@ def run_inference(
+             gen = response.choices[0].message.content or ""
+         except Exception as e:
+             logger.warning(f"[{i+1}/{total}] Inference failed for {job.get('id')}: {e}")
++            if on_complete:
++                raise RuntimeError("Inference failed; rerun with the same checkpoint to retry") from e
+             gen = ""
+ 
++        if on_complete and not gen:
++            raise RuntimeError("Inference returned an empty response; rerun with the same checkpoint to retry")
+         job["gen"] = gen
++        if on_complete:
++            on_complete(job)
+         if (i + 1) % 10 == 0 or (i + 1) == total:
+             logger.info(f"[{i+1}/{total}] Inference progress")
+ 
+@@ -175,9 +183,12 @@ def run_judge(
+     max_tokens: int = 32768,
+     temperature: float = 0.6,
+     max_retries: int = 3,
++    on_complete=None,
++    judge_system_prompts=None,
+ ) -> List[Dict[str, Any]]:
+     """Run LLM Judge scoring on all jobs."""
+-    judge_system_prompts = load_judge_system_prompts()
++    if judge_system_prompts is None:
++        judge_system_prompts = load_judge_system_prompts()
+     total = len(jobs)
+ 
+     for i, job in enumerate(jobs):
+@@ -185,6 +196,8 @@ def run_judge(
+         if not gen:
+             job["failed"] = 1.0
+             job["error_message"] = "No model generation"
++            if on_complete:
++                on_complete(job)
+             continue
+ 
+         subtask = get_subtask(job)
+@@ -231,6 +244,8 @@ def run_judge(
+                 "judge_raw_output": parsed.get("judge_raw_output", ""),
+             })
+         else:
++            if on_complete:
++                raise RuntimeError("Judge scoring failed; rerun with the same checkpoint to retry")
+             job.update({
+                 "total_score": INVALID_VALUE,
+                 "failed": 1.0,
+@@ -238,6 +253,8 @@ def run_judge(
+                 "extracted_output": model_output,
+             })
+ 
++        if on_complete:
++            on_complete(job)
+         if (i + 1) % 10 == 0 or (i + 1) == total:
+             logger.info(f"[{i+1}/{total}] Judge progress")
+ 
+@@ -301,6 +318,26 @@ def aggregate_scores(jobs: List[Dict[str, Any]]) -> None:
+ 
+ # ─── CLI ──────────────────────────────────────────────────────────────────────
+ 
++def same_path(first, second):
++    first, second = Path(first), Path(second)
++    return first.resolve() == second.resolve() or (
++        first.exists() and second.exists() and os.path.samefile(first, second)
++    )
++
++
++def run_with_checkpoint(jobs, path, settings, runner):
++    if not path:
++        return runner(jobs, None)
++    signature = checkpoint_signature(jobs, settings)
++    with RunCheckpoint(path, signature, jobs) as checkpoint:
++        remaining = jobs[len(checkpoint.completed):]
++        logger.info(f"Resuming with {len(checkpoint.completed)}/{len(jobs)} samples complete")
++        runner(remaining, checkpoint.append)
++        if len(checkpoint.completed) != len(jobs):
++            raise ValueError("Evaluation finished without checkpointing every sample")
++        return checkpoint.completed
++
++
+ def main():
+     parser = argparse.ArgumentParser(description="AgentWorldBench Evaluation")
+     subparsers = parser.add_subparsers(dest="command", required=True)
+@@ -314,6 +351,7 @@ def main():
+     p_infer.add_argument("--output-dir", default="./results", help="Output directory")
+     p_infer.add_argument("--max-tokens", type=int, default=32768)
+     p_infer.add_argument("--temperature", type=float, default=0.6)
++    p_infer.add_argument("--checkpoint", help="Save progress here and resume a matching run")
+ 
+     # judge
+     p_judge = subparsers.add_parser("judge", help="Run LLM judge scoring")
+@@ -325,6 +363,7 @@ def main():
+     p_judge.add_argument("--max-tokens", type=int, default=32768)
+     p_judge.add_argument("--temperature", type=float, default=0.6)
+     p_judge.add_argument("--max-retries", type=int, default=3)
++    p_judge.add_argument("--checkpoint", help="Save progress here and resume a matching run")
+ 
+     # score
+     p_score = subparsers.add_parser("score", help="Aggregate scores from judged results")
+@@ -333,29 +372,50 @@ def main():
+     args = parser.parse_args()
+ 
+     if args.command == "infer":
++        out_dir = Path(args.output_dir)
++        out_path = out_dir / "predictions.jsonl"
++        if args.checkpoint and same_path(args.checkpoint, out_path):
++            parser.error("--checkpoint must differ from the output file")
+         jobs = load_data(args.data_dir)
+         client = OpenAI(base_url=args.model_base_url, api_key=args.model_api_key)
+-        jobs = run_inference(jobs, client, args.model_name, args.max_tokens, args.temperature)
++        settings = {"stage": "infer", "base_url": args.model_base_url, "model": args.model_name,
++                    "max_tokens": args.max_tokens, "temperature": args.temperature}
++        jobs = run_with_checkpoint(
++            jobs, args.checkpoint, settings,
++            lambda remaining, save: run_inference(
++                remaining, client, args.model_name, args.max_tokens, args.temperature, on_complete=save
++            ),
++        )
+ 
+-        out_dir = Path(args.output_dir)
+         out_dir.mkdir(parents=True, exist_ok=True)
+-        out_path = out_dir / "predictions.jsonl"
+         with open(out_path, "w") as f:
+             for job in jobs:
+                 f.write(json.dumps(job, ensure_ascii=False) + "\n")
+         logger.info(f"Predictions saved to {out_path}")
+ 
+     elif args.command == "judge":
++        out_dir = Path(args.output_dir)
++        out_path = out_dir / "judged.jsonl"
++        if args.checkpoint and (same_path(args.checkpoint, out_path) or same_path(args.checkpoint, args.predictions)):
++            parser.error("--checkpoint must differ from the input and output files")
+         with open(args.predictions, "r") as f:
+             jobs = [json.loads(line) for line in f if line.strip()]
+ 
+         api_key = args.judge_api_key or os.environ.get("OPENAI_API_KEY", "EMPTY")
+         client = OpenAI(base_url=args.judge_base_url, api_key=api_key)
+-        jobs = run_judge(jobs, client, args.judge_model, args.max_tokens, args.temperature, args.max_retries)
++        prompts = load_judge_system_prompts()
++        settings = {"stage": "judge", "base_url": args.judge_base_url, "model": args.judge_model,
++                    "max_tokens": args.max_tokens, "temperature": args.temperature,
++                    "max_retries": args.max_retries, "prompts": prompts}
++        jobs = run_with_checkpoint(
++            jobs, args.checkpoint, settings,
++            lambda remaining, save: run_judge(
++                remaining, client, args.judge_model, args.max_tokens, args.temperature,
++                args.max_retries, on_complete=save, judge_system_prompts=prompts,
++            ),
++        )
+ 
+-        out_dir = Path(args.output_dir)
+         out_dir.mkdir(parents=True, exist_ok=True)
+-        out_path = out_dir / "judged.jsonl"
+         with open(out_path, "w") as f:
+             for job in jobs:
+                 f.write(json.dumps(job, ensure_ascii=False) + "\n")
+diff --git a/eval/lwm_eval_utils/checkpoint.py b/eval/lwm_eval_utils/checkpoint.py
+new file mode 100644
+index 0000000..f2d95b3
+--- /dev/null
++++ b/eval/lwm_eval_utils/checkpoint.py
+@@ -0,0 +1,119 @@
++"""Incremental checkpoints for resumable evaluation runs."""
++
++import hashlib
++import json
++import os
++from pathlib import Path
++from typing import Any, Dict, List
++
++
++def _digest(value: Any) -> str:
++    encoder = json.JSONEncoder(sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
++    digest = hashlib.sha256()
++    for part in encoder.iterencode(value):
++        digest.update(part.encode("utf-8"))
++    return digest.hexdigest()
++
++
++def checkpoint_signature(jobs: List[Dict[str, Any]], settings: Dict[str, Any]) -> str:
++    """Hash inputs, settings and evaluator code without storing credentials."""
++    evaluator_dir = Path(__file__).resolve().parent.parent
++    source_files = [evaluator_dir / "eval.py", *sorted((evaluator_dir / "lwm_eval_utils").glob("*.py"))]
++    source_hashes = {str(path.relative_to(evaluator_dir)): hashlib.sha256(path.read_bytes()).hexdigest()
++                     for path in source_files}
++    payload = {"jobs": jobs, "settings": settings, "source_hashes": source_hashes}
++    return _digest(payload)
++
++
++def _lock_file(file):
++    if os.name == "nt":
++        import msvcrt
++        os.lseek(file.fileno(), 0, os.SEEK_SET)
++        msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
++    else:
++        import fcntl
++        fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
++
++
++def _unlock_file(file):
++    if os.name == "nt":
++        import msvcrt
++        os.lseek(file.fileno(), 0, os.SEEK_SET)
++        msvcrt.locking(file.fileno(), msvcrt.LK_UNLCK, 1)
++    else:
++        import fcntl
++        fcntl.flock(file.fileno(), fcntl.LOCK_UN)
++
++
++class RunCheckpoint:
++    """Append completed jobs and resume only a validated prefix of the same run."""
++
++    def __init__(self, path: str, signature: str, jobs: List[Dict[str, Any]]):
++        self.path = Path(path).resolve()
++        self.signature = signature
++        self.input_hashes = [_digest(job) for job in jobs]
++        self.completed = []
++        self._file = None
++
++    def __enter__(self):
++        self.path.parent.mkdir(parents=True, exist_ok=True)
++        try:
++            self._file = self.path.open("x+b", buffering=0)
++        except FileExistsError:
++            self._file = self.path.open("r+b", buffering=0)
++        try:
++            _lock_file(self._file)
++        except OSError as exc:
++            self._file.close()
++            self._file = None
++            raise ValueError(f"Checkpoint is locked: {self.path}") from exc
++
++        try:
++            header = {"version": 1, "signature": self.signature}
++            if self._file.seek(0, os.SEEK_END) == 0:
++                self._write(json.dumps(header) + "\n")
++            else:
++                self._file.seek(0)
++                first = self._file.readline()
++                if not first.endswith(b"\n") or json.loads(first) != header:
++                    raise ValueError("Checkpoint does not match the current inputs or settings")
++                for line in self._file:
++                    if not line.endswith(b"\n"):
++                        raise ValueError("Checkpoint ends with an incomplete record")
++                    record = json.loads(line)
++                    if (not isinstance(record, dict) or record.get("index") != len(self.completed)
++                            or not isinstance(record.get("result"), dict)
++                            or len(self.completed) >= len(self.input_hashes)
++                            or record.get("input_hash") != self.input_hashes[len(self.completed)]):
++                        raise ValueError("Checkpoint records are not a valid input prefix")
++                    self.completed.append(record["result"])
++            self._file.seek(0, os.SEEK_END)
++            return self
++        except BaseException:
++            self._close()
++            raise
++
++    def append(self, result: Dict[str, Any]):
++        if len(self.completed) >= len(self.input_hashes):
++            raise ValueError("Checkpoint has more records than inputs")
++        record = {"index": len(self.completed), "input_hash": self.input_hashes[len(self.completed)],
++                  "result": result}
++        self._write(json.dumps(record, ensure_ascii=False) + "\n")
++        self.completed.append(result)
++
++    def _write(self, text: str):
++        data = text.encode("utf-8")
++        if self._file.write(data) != len(data):
++            raise OSError("Incomplete checkpoint write")
++        self._file.flush()
++
++    def _close(self):
++        if self._file is not None:
++            try:
++                _unlock_file(self._file)
++            finally:
++                self._file.close()
++                self._file = None
++
++    def __exit__(self, exc_type, exc, tb):
++        self._close()
+diff --git a/tests/test_evaluation_checkpoint.py b/tests/test_evaluation_checkpoint.py
+new file mode 100644
+index 0000000..3468733
+--- /dev/null
++++ b/tests/test_evaluation_checkpoint.py
+@@ -0,0 +1,265 @@
++import copy
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++import unittest
++from types import SimpleNamespace
++from unittest import mock
++
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "eval"))
++import eval as evaluator
++from lwm_eval_utils.checkpoint import RunCheckpoint, checkpoint_signature
++
++
++class FakeCompletions:
++    def __init__(self, reply, interrupt_after=None):
++        self.reply = reply
++        self.interrupt_after = interrupt_after
++        self.calls = []
++
++    def create(self, **kwargs):
++        if self.interrupt_after is not None and len(self.calls) == self.interrupt_after:
++            raise KeyboardInterrupt()
++        self.calls.append(kwargs)
++        content = self.reply(kwargs) if callable(self.reply) else self.reply
++        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
++
++
++def client_for(completions):
++    return SimpleNamespace(chat=SimpleNamespace(completions=completions))
++
++
++def jobs():
++    return [
++        {"id": i, "task": "mcp", "turn_idx": 1, "prompt": [f"prompt-{i}"],
++         "response": [f"observation-{i}"], "system_str": "simulate"}
++        for i in range(3)
++    ]
++
++
++class EvaluationCheckpointTest(unittest.TestCase):
++    def setUp(self):
++        self.temp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temp.cleanup)
++        self.path = Path(self.temp.name) / "run.jsonl"
++        self.settings = {"stage": "infer", "model": "test-model", "base_url": "https://example.test/v1",
++                         "max_tokens": 42, "temperature": 0.6}
++
++    def infer(self, data, fake, path=None, settings=None):
++        return evaluator.run_with_checkpoint(
++            data, path, settings or self.settings,
++            lambda remaining, save: evaluator.run_inference(
++                remaining, client_for(fake), "test-model", 42, 0.6, on_complete=save
++            ),
++        )
++
++    def test_inference_resumes_without_repeating_completed_calls(self):
++        def reply(kw):
++            return "simulated " + kw["messages"][-1]["content"]
++        reference_client = FakeCompletions(reply)
++        expected = self.infer(copy.deepcopy(jobs()), reference_client)
++        first_client = FakeCompletions(reply, interrupt_after=2)
++        with self.assertRaises(KeyboardInterrupt):
++            self.infer(copy.deepcopy(jobs()), first_client, str(self.path))
++        self.assertEqual(len(first_client.calls), 2)
++        second_client = FakeCompletions(reply)
++        actual = self.infer(copy.deepcopy(jobs()), second_client, str(self.path))
++        self.assertEqual(actual, expected)
++        self.assertEqual(len(second_client.calls), 1)
++        self.assertEqual(len(self.path.read_text(encoding="utf-8").splitlines()), 4)
++        third_client = FakeCompletions(reply)
++        self.assertEqual(self.infer(copy.deepcopy(jobs()), third_client, str(self.path)), expected)
++        self.assertEqual(len(third_client.calls), 0)
++
++    def test_judge_resumes_and_preserves_failed_samples(self):
++        data = jobs()
++        for job in data:
++            job["gen"] = "<predicted_observation>simulated</predicted_observation>"
++        data[0]["gen"] = ""
++        reply = json.dumps({"scores": {d: 4 for d in evaluator.SCORE_DIMENSIONS}})
++        prompts = {"mcp": "judge prompt"}
++        settings = {"stage": "judge", "model": "judge", "base_url": "https://example.test/v1",
++                    "temperature": 0.6, "max_tokens": 42, "max_retries": 3, "prompts": prompts}
++
++        def judge(values, fake, path=None, run_settings=None):
++            return evaluator.run_with_checkpoint(
++                values, path, run_settings or settings,
++                lambda remaining, save: evaluator.run_judge(
++                    remaining, client_for(fake), "judge", 42, 0.6, 3,
++                    on_complete=save, judge_system_prompts=prompts,
++                ),
++            )
++
++        expected = judge(copy.deepcopy(data), FakeCompletions(reply))
++        first = FakeCompletions(reply, interrupt_after=1)
++        with self.assertRaises(KeyboardInterrupt):
++            judge(copy.deepcopy(data), first, str(self.path))
++        resumed = FakeCompletions(reply)
++        actual = judge(copy.deepcopy(data), resumed, str(self.path))
++        self.assertEqual(actual, expected)
++        self.assertEqual(len(resumed.calls), 1)
++        self.assertEqual(actual[0]["failed"], 1.0)
++
++    def test_mismatched_input_or_settings_leave_checkpoint_unchanged(self):
++        data = jobs()
++        signature = checkpoint_signature(data, self.settings)
++        with RunCheckpoint(str(self.path), signature, data) as checkpoint:
++            checkpoint.append({**data[0], "gen": "complete"})
++        original = self.path.read_bytes()
++        for modified_jobs, modified_settings in (
++            ([{**data[0], "prompt": ["changed"]}, *data[1:]], self.settings),
++            (data, {**self.settings, "model": "another"}),
++            (data, {**self.settings, "base_url": "https://another.test/v1"}),
++            (data, {**self.settings, "temperature": 0.0}),
++            (data, {**self.settings, "prompts": {"mcp": "changed"}}),
++        ):
++            fake = FakeCompletions("response")
++            with self.assertRaises(ValueError):
++                self.infer(copy.deepcopy(modified_jobs), fake, str(self.path), modified_settings)
++            self.assertEqual(len(fake.calls), 0)
++            self.assertEqual(self.path.read_bytes(), original)
++
++    def test_malformed_and_out_of_order_records_are_not_modified(self):
++        data = jobs()
++        header = json.dumps({"version": 1, "signature": checkpoint_signature(data, self.settings)}) + "\n"
++        for suffix in (
++            '{"index":0',
++            json.dumps({"index": 1, "result": data[0]}) + "\n",
++            json.dumps({"index": 0, "input_hash": "wrong", "result": data[0]}) + "\n",
++        ):
++            self.path.write_text(header + suffix, encoding="utf-8")
++            original = self.path.read_bytes()
++            with self.assertRaises(ValueError):
++                self.infer(copy.deepcopy(data), FakeCompletions("response"), str(self.path))
++            self.assertEqual(self.path.read_bytes(), original)
++
++    def test_checkpoint_contains_no_client_secret_and_rejects_active_lock(self):
++        settings = {**self.settings, "base_url": "https://user:secret@example.test/v1"}
++        self.infer(copy.deepcopy(jobs()), FakeCompletions("response"), str(self.path), settings)
++        self.assertNotIn("secret", self.path.read_text(encoding="utf-8"))
++        alias = self.path.with_name("hardlink.jsonl")
++        os.link(self.path, alias)
++        signature = checkpoint_signature(jobs(), settings)
++        with RunCheckpoint(str(self.path), signature, jobs()):
++            for path in (self.path, alias):
++                with self.assertRaisesRegex(ValueError, "locked"):
++                    self.infer(copy.deepcopy(jobs()), FakeCompletions("response"), str(path), settings)
++
++    def test_crashed_process_releases_lock(self):
++        data = jobs()
++        signature = checkpoint_signature(data, self.settings)
++        script = """
++import json, os, sys
++from lwm_eval_utils.checkpoint import RunCheckpoint
++path, signature, encoded = sys.argv[1:]
++data = json.loads(encoded)
++checkpoint = RunCheckpoint(path, signature, data).__enter__()
++checkpoint.append({**data[0], 'gen': 'saved'})
++os._exit(0)
++"""
++        env = os.environ.copy()
++        eval_dir = str(Path(__file__).resolve().parents[1] / "eval")
++        env["PYTHONPATH"] = os.pathsep.join([eval_dir, env.get("PYTHONPATH", "")])
++        result = subprocess.run([sys.executable, "-c", script, str(self.path), signature, json.dumps(data)],
++                                env=env, capture_output=True, text=True)
++        self.assertEqual(result.returncode, 0, result.stderr)
++        fake = FakeCompletions("response")
++        actual = self.infer(copy.deepcopy(data), fake, str(self.path))
++        self.assertEqual(actual[0]["gen"], "saved")
++        self.assertEqual(len(fake.calls), 2)
++
++    def test_empty_checkpoint_is_initialized_after_creation_crash(self):
++        self.path.touch()
++        fake = FakeCompletions("response")
++        self.assertEqual(len(self.infer(copy.deepcopy(jobs()), fake, str(self.path))), 3)
++        self.assertEqual(len(fake.calls), 3)
++
++    def test_transient_inference_error_is_retried_after_resume(self):
++        class Flaky(FakeCompletions):
++            def create(self, **kwargs):
++                if len(self.calls) == 1:
++                    raise ConnectionError("temporary failure")
++                return super().create(**kwargs)
++
++        first = Flaky("response")
++        with self.assertRaisesRegex(RuntimeError, "rerun"):
++            self.infer(copy.deepcopy(jobs()), first, str(self.path))
++        self.assertEqual(len(first.calls), 1)
++        resumed = FakeCompletions("response")
++        self.assertEqual(len(self.infer(copy.deepcopy(jobs()), resumed, str(self.path))), 3)
++        self.assertEqual(len(resumed.calls), 2)
++
++    def test_judge_failure_is_retried_after_resume(self):
++        data = jobs()
++        for job in data:
++            job["gen"] = "simulated"
++        prompts = {"mcp": "judge"}
++        settings = {"stage": "judge", "prompts": prompts}
++        invalid = FakeCompletions("not JSON")
++        def run(fake):
++            return evaluator.run_with_checkpoint(
++                copy.deepcopy(data), str(self.path), settings,
++                lambda remaining, save: evaluator.run_judge(
++                    remaining, client_for(fake), "judge", max_retries=2,
++                    on_complete=save, judge_system_prompts=prompts,
++                ),
++            )
++        with self.assertRaisesRegex(RuntimeError, "rerun"):
++            run(invalid)
++        self.assertEqual(len(invalid.calls), 2)
++        reply = json.dumps({"scores": {d: 4 for d in evaluator.SCORE_DIMENSIONS}})
++        valid = FakeCompletions(reply)
++        self.assertEqual(len(run(valid)), 3)
++        self.assertEqual(len(valid.calls), 3)
++
++    def test_cli_restores_checkpoint_and_preserves_output_format(self):
++        data_dir = Path(self.temp.name) / "data"
++        data_dir.mkdir()
++        (data_dir / "mcp_test.jsonl").write_text(
++            "".join(json.dumps(job) + "\n" for job in jobs()), encoding="utf-8"
++        )
++        out_dir = Path(self.temp.name) / "results"
++        args = ["eval.py", "infer", "--data-dir", str(data_dir), "--model-base-url", "https://example.test/v1",
++                "--model-name", "test-model", "--model-api-key", "test-secret", "--output-dir", str(out_dir),
++                "--checkpoint", str(self.path)]
++        with mock.patch.object(sys, "argv", args), mock.patch.object(evaluator, "OpenAI", return_value=client_for(FakeCompletions("response", 1))):
++            with self.assertRaises(KeyboardInterrupt):
++                evaluator.main()
++        resumed = FakeCompletions("response")
++        with mock.patch.object(sys, "argv", args), mock.patch.object(evaluator, "OpenAI", return_value=client_for(resumed)):
++            evaluator.main()
++        records = [json.loads(line) for line in (out_dir / "predictions.jsonl").read_text(encoding="utf-8").splitlines()]
++        self.assertEqual([record["id"] for record in records], [0, 1, 2])
++        self.assertEqual(len(resumed.calls), 2)
++        self.assertNotIn("test-secret", self.path.read_text(encoding="utf-8"))
++
++    def test_cli_rejects_checkpoint_aliasing_output_or_input(self):
++        out_dir = Path(self.temp.name) / "results"
++        out_dir.mkdir()
++        output = out_dir / "predictions.jsonl"
++        output.write_text("existing result", encoding="utf-8")
++        alias = Path(self.temp.name) / "alias.jsonl"
++        os.link(output, alias)
++        args = ["eval.py", "infer", "--data-dir", self.temp.name, "--model-base-url", "https://example.test/v1",
++                "--model-name", "test-model", "--output-dir", str(out_dir), "--checkpoint", str(alias)]
++        with mock.patch.object(sys, "argv", args), mock.patch.object(evaluator, "OpenAI") as client:
++            with self.assertRaises(SystemExit):
++                evaluator.main()
++        client.assert_not_called()
++        self.assertEqual(output.read_text(encoding="utf-8"), "existing result")
++
++        args = ["eval.py", "judge", "--predictions", str(output), "--judge-base-url", "https://example.test/v1",
++                "--judge-model", "judge", "--output-dir", self.temp.name, "--checkpoint", str(alias)]
++        with mock.patch.object(sys, "argv", args), mock.patch.object(evaluator, "OpenAI") as client:
++            with self.assertRaises(SystemExit):
++                evaluator.main()
++        client.assert_not_called()
++        self.assertEqual(output.read_text(encoding="utf-8"), "existing result")
++
++
++if __name__ == "__main__":
++    unittest.main()
