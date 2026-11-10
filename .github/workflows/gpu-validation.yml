@@ -1,14 +1,11 @@
-name: RMSNorm fake output validation
-
+name: torchft quantization large-index regression
 on:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
+  cuda:
+    runs-on: [self-hosted, Windows, X64, torchft-large-index-1f14a8179a]
     timeout-minutes: 15
     defaults:
       run:
@@ -17,29 +14,38 @@ jobs:
       MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
       MASK_USER: ${{ secrets.MASK_USER }}
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+      PYTHONIOENCODING: utf-8
+      PYTHONPATH: 'C:\PR\fla-research-deps-20261110;C:\PR\torchft-test-deps-20261111'
+      CC: 'C:\PR\fla-research-deps-20261110\triton\runtime\tcc\tcc.exe'
+      CUDA_PATH: 'C:\PR\fla-research-deps-20261110\triton\backends\nvidia'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          path: harness
           persist-credentials: false
-      - name: Verify source hashes and CUDA device
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: meta-pytorch/torchft
+          ref: 43e3b6d3557194ff1eea3c3217e94ef7f6308bc2
+          path: baseline
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: meta-pytorch/torchft
+          ref: 43e3b6d3557194ff1eea3c3217e94ef7f6308bc2
+          path: candidate
+          persist-credentials: false
+      - name: Apply candidate and validate on CUDA
         run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+          if ((git -C baseline rev-parse HEAD) -ne '43e3b6d3557194ff1eea3c3217e94ef7f6308bc2') { throw 'Wrong baseline' }
+          if ((git -C candidate rev-parse HEAD) -ne '43e3b6d3557194ff1eea3c3217e94ef7f6308bc2') { throw 'Wrong candidate base' }
+          $patch = Join-Path $env:GITHUB_WORKSPACE 'harness/torchft-large-index.patch'
+          git -C candidate apply --check $patch
+          if ($LASTEXITCODE -ne 0) { throw 'Patch does not apply cleanly' }
+          git -C candidate apply $patch
+          if ($LASTEXITCODE -ne 0) { throw 'Patch application failed' }
+          $env:TORCHFT_BASE = Join-Path $env:GITHUB_WORKSPACE 'baseline'
+          $env:TORCHFT_CANDIDATE = Join-Path $env:GITHUB_WORKSPACE 'candidate'
+          $env:TORCHFT_HARNESS = Join-Path $env:GITHUB_WORKSPACE 'harness'
+          & 'C:\PR\torchao-gpu-venv-20261109\Scripts\python.exe' (Join-Path $env:GITHUB_WORKSPACE 'harness/torchft_validation_runner.py')
+          if ($LASTEXITCODE -ne 0) { throw 'Quantization GPU validation failed' }
