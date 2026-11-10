@@ -1,0 +1,17 @@
+{
+  "base": "5fe89b3d1aedc9f0dde8f1ce94c74dc1721e4422",
+  "head": "e1f61854dd1fc7610ef3e186194ecc116a58968b",
+  "patch_sha256": "f9423f20fcad629ca40c6b7d3d9922a5c4b9f83d8ff26d346f26390c24e4b703",
+  "files": {
+    "unirl/algorithms/base.py": "61550eea7ece2d3ff3794e1ad6e3133d881bd55c1596a4d42b6e8116a2b8fb34",
+    "unirl/algorithms/cppo.py": "62e92d9a28ed563cb9500eb72b25e2133d998b4e3d9606183769b29fe8676b7e",
+    "unirl/algorithms/dppo.py": "4a4aa711efb8923dd6e2ccbe2a56edbb3d8d80844320fc47fc8ac6365f1d1832",
+    "unirl/algorithms/drpo.py": "e1a6b10aba9ebd791be3f12af8fa0f50ff0c3da6a96597dc6c7c99df31252604",
+    "unirl/algorithms/grpo.py": "fd9ebac817104d6091f33b1e0505368cf3010e04551fd7cc810e140bfa988dbc",
+    "unirl/algorithms/gspo.py": "13840c6b8621eb4b9e3270f733a7c131173737feeae3fd1c2554bdddb45730c5",
+    "unirl/train/readme.md": "8439567ff60a11e1d0cadd05e6769dccb634cf7b370c5c5e7ea77dcd72650262",
+    "unirl/train/stack/loss_scale.py": "723f99d1c0e282e9418848f9502cb46b86bbcd62f3790f2fc64a49923fc800f4",
+    "unirl/trainer/agentic.py": "970feb7b096694aa66014ede370584f097414a502215745e67a86840cd6ca864",
+    "unirl/types/sample.py": "d7952f6466d7ab4f20a24ba6d94f8f593dcdb7c9f0b0a97e2172d4878204f1cb"
+  }
+}
