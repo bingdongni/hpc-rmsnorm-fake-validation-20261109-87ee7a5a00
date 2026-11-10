@@ -1,45 +1,59 @@
-name: RMSNorm fake output validation
-
+name: DeepJIT precompilation validation
 on:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
-    env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+  regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          repository: bingdongni/DeepJIT
+          ref: 3b3b6e4f5013ccb18bff17e8fd50f34625193df5
+          path: patched
           persist-credentials: false
-      - name: Verify source hashes and CUDA device
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: deepseek-ai/DeepJIT
+          ref: 6e4bba88ee9e73a0986714f7f6bb45590ebeb04d
+          path: baseline
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install CPU test dependencies
         run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
+          sudo apt-get update -qq
+          sudo apt-get install -y libdw-dev
+          python -m pip install pytest pybind11==2.13.6
+          c++ --version | head -1
+      - name: Reproduce explicit finish failure on base
+        shell: bash
         run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
+          cat > /tmp/deepjit-precompiler-base.cpp <<'EOF'
+          #include <deep_jit/runtime/precompiler.hpp>
+          int main() {
+              deep_jit::Precompiler precompiler(1);
+              precompiler.enqueue("test", [] {});
+              precompiler.finish();
+          }
+          EOF
+          c++ -std=c++20 -O2 -pthread -Wall -Wextra -Werror -I baseline/include /tmp/deepjit-precompiler-base.cpp -o /tmp/deepjit-precompiler-base
+          set +e
+          /tmp/deepjit-precompiler-base 2>/tmp/deepjit-precompiler-base.log
+          status=$?
+          set -e
+          cat /tmp/deepjit-precompiler-base.log
+          test "$status" = 1
+          grep -F 'DeepJIT precompilation failed:' /tmp/deepjit-precompiler-base.log
+          grep -F 'No associated state' /tmp/deepjit-precompiler-base.log
+      - name: Test C++, runtime and Python binding
+        working-directory: patched
+        run: python -m pytest -q tests/test_precompiler.py tests/test_precompiler_runtime.py tests/test_executor.py
+      - name: Test current pybind11
+        working-directory: patched
         run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+          python -m pip install pybind11==3.0.1
+          python -m pytest -q tests/test_precompiler_runtime.py
