@@ -1,0 +1,58 @@
+diff --git a/api/src/main/java/com/mineagent/api/config/MineAgentConfig.java b/api/src/main/java/com/mineagent/api/config/MineAgentConfig.java
+index 285c2f4..028fbcb 100644
+--- a/api/src/main/java/com/mineagent/api/config/MineAgentConfig.java
++++ b/api/src/main/java/com/mineagent/api/config/MineAgentConfig.java
+@@ -38,6 +38,11 @@ public record MineAgentConfig(
+         public static final CompanionConfig DEFAULTS = new CompanionConfig(
+             "MineAgent", "survival", "", false, false, "zh_cn"
+         );
++
++        public CompanionConfig(String name, String gameMode, String skinName,
++                               boolean instantBreak, boolean creativeReach) {
++            this(name, gameMode, skinName, instantBreak, creativeReach, DEFAULTS.language());
++        }
+     }
+ 
+     public record SurvivalConfig(
+diff --git a/engine/src/main/java/com/mineagent/engine/loop/AgentLoop.java b/engine/src/main/java/com/mineagent/engine/loop/AgentLoop.java
+index faf6048..5afb6ae 100644
+--- a/engine/src/main/java/com/mineagent/engine/loop/AgentLoop.java
++++ b/engine/src/main/java/com/mineagent/engine/loop/AgentLoop.java
+@@ -327,6 +327,12 @@ public class AgentLoop {
+     private final AtomicLong liveAssetGameTick = new AtomicLong();
+     private volatile long lastAssetSnapshotTick = Long.MIN_VALUE;
+ 
++    public AgentLoop(AgentPlayer companion, String providerId, String apiKey,
++                      String model, String baseUrl, double temperature, int maxTokens,
++                      String reasoningEffort) {
++        this(companion, providerId, apiKey, model, baseUrl, temperature, maxTokens, reasoningEffort, null);
++    }
++
+     /**
+      * @param replyLanguage default chat language from
+      *                      {@link CompanionLanguage#resolve}; null keeps the
+diff --git a/fabric/src/test/java/com/mineagent/engine/loop/CompanionLanguageTest.java b/fabric/src/test/java/com/mineagent/engine/loop/CompanionLanguageTest.java
+index 8201a62..2fb9d55 100644
+--- a/fabric/src/test/java/com/mineagent/engine/loop/CompanionLanguageTest.java
++++ b/fabric/src/test/java/com/mineagent/engine/loop/CompanionLanguageTest.java
+@@ -1,5 +1,6 @@
+ package com.mineagent.engine.loop;
+ 
++import com.mineagent.api.config.MineAgentConfig;
+ import org.junit.jupiter.api.Test;
+ 
+ import static org.junit.jupiter.api.Assertions.*;
+@@ -16,6 +17,13 @@ final class CompanionLanguageTest {
+         return CompanionLanguage.promptSection(CompanionLanguage.resolve(configured, ownerLocale));
+     }
+ 
++    @Test void oldCompanionConfigConstructorKeepsTheDefaultLanguage() {
++        var config = new MineAgentConfig.CompanionConfig("name", "survival", "skin", true, false);
++        assertEquals("zh_cn", config.language());
++        assertEquals("name", config.name());
++        assertTrue(config.instantBreak());
++    }
++
+     @Test void defaultKeepsTheOriginalSectionByteForByte() {
+         assertEquals(ORIGINAL, CompanionLanguage.promptSection(null));
+         assertEquals(ORIGINAL, section("zh_cn", "pt_br"));
