@@ -1,0 +1,461 @@
+diff --git a/torchft/collectives.py b/torchft/collectives.py
+index ba5846f..7c1fd10 100644
+--- a/torchft/collectives.py
++++ b/torchft/collectives.py
+@@ -5,6 +5,8 @@
+ # LICENSE file in the root directory of this source tree.
+ 
+ import math
++import threading
++from datetime import timedelta
+ from typing import Optional, TYPE_CHECKING
+ 
+ import torch
+@@ -153,6 +155,103 @@ class _QuantizedOpFuture(Future[list[torch.Tensor]]):
+         return self._return_tensors
+ 
+ 
++def _wait_for_event(event: torch.Event, device: torch.device) -> None:
++    if device.type == "cuda":
++        torch.cuda.current_stream(device).wait_event(event)
++    elif device.type == "xpu":
++        torch.xpu.current_stream(device).wait_event(event)
++    else:
++        torch.accelerator.current_stream(device).wait_event(event)
++
++
++class _QuantizedWork(Work):
++    """A communication work whose completion includes GPU postprocessing."""
++
++    def __init__(
++        self,
++        work: Work,
++        done: torch.Event,
++        outputs: list[torch.Tensor],
++        buffers: list[torch.Tensor],
++    ):
++        super().__init__()
++        self._work = work
++        self._done = done
++        self._buffers = buffers
++        self._device = outputs[0].device
++        self._result_lock = threading.Lock()
++        self._result_future: Optional[Future[int]] = None
++
++        def finish(fut: Future[list[torch.Tensor]]) -> list[torch.Tensor]:
++            # Keep the communication buffers alive until this callback is queued.
++            _ = buffers
++            fut.wait()
++            _wait_for_event(done, outputs[0].device)
++            return outputs
++
++        self._future = work.get_future().then(finish)
++
++    def wait(self, timeout: Optional[timedelta] = None) -> bool:
++        success = self._work.wait() if timeout is None else self._work.wait(timeout)
++        if success:
++            _wait_for_event(self._done, self._device)
++        return success
++
++    def block_current_stream(self) -> None:
++        _wait_for_event(self._done, self._device)
++
++    def synchronize(self) -> None:
++        self.wait()
++
++    def get_future(self) -> Future[list[torch.Tensor]]:
++        return self._future
++
++    def is_completed(self) -> bool:
++        if not self._work.is_completed():
++            return False
++        # pyrefly: ignore [missing-attribute]
++        status = self._work.get_future_result()
++        if not status.done():
++            return False
++        try:
++            if int(status.value()) != 0:
++                return True
++        except Exception:
++            return True
++        return self._done.query()
++
++    def is_success(self) -> bool:
++        return self._work.is_success()
++
++    def result(self) -> list[torch.Tensor]:
++        return self._future.wait()
++
++    def get_future_result(self) -> Future[int]:
++        with self._result_lock:
++            if self._result_future is None:
++                # pyrefly: ignore [missing-attribute]
++                backend_result = self._work.get_future_result()
++                result: Future[int] = Future()
++
++                def complete() -> None:
++                    try:
++                        value = backend_result.wait()
++                        # WorkResult.SUCCESS is 0. On failure, the GPU event may
++                        # never complete, so return the status without waiting.
++                        if int(value) == 0:
++                            self._done.synchronize()
++                        result.set_result(value)
++                    except Exception as exc:
++                        # pyrefly: ignore [bad-argument-type]
++                        result.set_exception(exc)
++
++                # The backend status Future does not track CUDA streams. Avoid
++                # synchronizing an event on the NCCL watchdog thread.
++                threading.Thread(target=complete, daemon=True).start()
++                self._result_future = result
++            return self._result_future
++
++
+ def reduce_scatter_quantized(
+     output: torch.Tensor,
+     inputs: list[torch.Tensor],
+@@ -230,6 +329,9 @@ def reduce_scatter_quantized(
+         sync_stream = torch.Stream(device=device)
+ 
+     assert sync_stream is not None
++    for tensor in inputs:
++        tensor.record_stream(sync_stream)
++    output.record_stream(sync_stream)
+     # Ensure that all operations are completed on the current stream
+     # before proceeding with all-reduce
+     sync_stream.wait_stream(torch.accelerator.current_stream())
+@@ -250,47 +352,19 @@ def reduce_scatter_quantized(
+         )
+         work.wait()
+ 
+-        fut = work.get_future()
+-
+-        def callback(fut: Future[list[torch.Tensor]]) -> None:
+-            nonlocal \
+-                inputs, \
+-                quantized_inputs_out, \
+-                world_size, \
+-                sync_stream, \
+-                rank, \
+-                reduce_outputs, \
+-                reducescatter_opts
+-
+-            with get_stream_context(sync_stream):
+-                # Setup stream dependency
+-                fut.wait()
+-                # Reduce chunks locally in higher precision after dequantization.
+-                # The output is again quantized.
+-                fused_reduce_fp8(
+-                    inputs,
+-                    quantized_inputs_out,
+-                    world_size,
+-                    rank,
+-                    reducescatter_opts.reduceOp,
+-                )
+-
+-                # Get view into the output tensor that corresponds to the
+-                # current rank
+-                quantized_reduce_scatter = (
+-                    quantized_inputs_out.view(world_size, -1).split(1)[rank].squeeze(0)
+-                )
+-                # Dequantize the result back to the original precision for
+-                # the current rank
+-                fused_dequantize_from_fp8(
+-                    reduce_outputs,
+-                    quantized_reduce_scatter,
+-                    1,
+-                )
+-
+-        fut.add_done_callback(callback)
+-
+-        return work
++        # work.wait() orders the current stream after the communication. Queue
++        # the remaining kernels on that stream before recording completion.
++        fused_reduce_fp8(
++            inputs, quantized_inputs_out, world_size, rank, reducescatter_opts.reduceOp
++        )
++        quantized_reduce_scatter = (
++            quantized_inputs_out.view(world_size, -1).split(1)[rank].squeeze(0)
++        )
++        fused_dequantize_from_fp8(reduce_outputs, quantized_reduce_scatter, 1)
++        done = sync_stream.record_event()
++        return _QuantizedWork(
++            work, done, [output], [quantized_inputs, quantized_inputs_out]
++        )
+ 
+ 
+ def allreduce_quantized(
+@@ -349,6 +423,7 @@ def allreduce_quantized(
+ 
+     rank = process_group.rank()
+     world_size: int = process_group.size()
++    outputs = list(tensors)
+ 
+     if sync_stream is None:
+         # Create stream on the same device as the input tensors
+@@ -356,6 +431,8 @@ def allreduce_quantized(
+         sync_stream = torch.Stream(device=device)
+ 
+     assert sync_stream is not None
++    for tensor in outputs:
++        tensor.record_stream(sync_stream)
+     # Ensure that all operations are completed on the current stream
+     # before proceeding with all-reduce
+     sync_stream.wait_stream(torch.accelerator.current_stream())
+@@ -400,17 +477,8 @@ def allreduce_quantized(
+         # completed.
+ 
+         work.wait()
+-        fut = work.get_future()
+-
+-        def callback(fut: Future[list[torch.Tensor]]) -> None:
+-            # Dequantize and copy to output buffer.
+-            nonlocal tensors, quantized_tensors, world_size, sync_stream
+-
+-            with get_stream_context(sync_stream):
+-                # Setup stream dependency
+-                fut.wait()
+-                # Dequantize the result back to the original precision
+-                fused_dequantize_from_fp8(tensors, quantized_tensors, world_size)
+-
+-        fut.add_done_callback(callback)
+-        return work
++        fused_dequantize_from_fp8(tensors, quantized_tensors, world_size)
++        done = sync_stream.record_event()
++        return _QuantizedWork(
++            work, done, outputs, [quantized_tensors, quantized_tensors_out]
++        )
+diff --git a/torchft/collectives_work_test.py b/torchft/collectives_work_test.py
+new file mode 100644
+index 0000000..19318b0
+--- /dev/null
++++ b/torchft/collectives_work_test.py
+@@ -0,0 +1,227 @@
++# Copyright (c) Meta Platforms, Inc. and affiliates.
++# All rights reserved.
++#
++# This source code is licensed under the BSD-style license found in the
++# LICENSE file in the root directory of this source tree.
++
++import gc
++from datetime import timedelta
++from typing import cast
++from unittest import skipUnless, TestCase
++
++import torch
++from torch.distributed import ProcessGroup, ReduceOp
++from torchft.collectives import allreduce_quantized, reduce_scatter_quantized
++
++
++class _FakeWork:
++    def __init__(self, future, event):
++        self.future = future
++        self.event = event
++        self.last_timeout = None
++        self.status = torch.futures.Future()
++
++    def wait(self, timeout=None):
++        self.last_timeout = timeout
++        torch.cuda.current_stream().wait_event(self.event)
++        return True
++
++    def block_current_stream(self):
++        torch.cuda.current_stream().wait_event(self.event)
++
++    def get_future(self):
++        return self.future
++
++    def get_future_result(self):
++        return self.status
++
++    def is_completed(self):
++        return self.future.done()
++
++    def is_success(self):
++        return True
++
++
++class _FakeGroup:
++    """A one-rank group whose communication Future is explicitly completed."""
++
++    def __init__(self, scatter):
++        self.scatter = scatter
++        self.pending = None
++
++    def rank(self):
++        return 0
++
++    def size(self):
++        return 1
++
++    def alltoall_base(self, output, inputs, *args):
++        output.copy_(inputs)
++        self.transport = output
++        if self.scatter:
++            # Two one-element rows: each scale occupies every other float.
++            output.view(torch.float32).reshape(-1)[::2].mul_(0.5)
++            self.pending = torch.futures.Future(devices=[output.device])
++            future = self.pending
++        else:
++            future = torch.futures.Future(devices=[output.device])
++            future.set_result([output])
++        self.last_work = _FakeWork(future, torch.cuda.current_stream().record_event())
++        return self.last_work
++
++    def allgather_into_tensor_coalesced(self, outputs, inputs, options):
++        outputs[0].copy_(inputs[0])
++        self.transport = outputs[0]
++        outputs[0].view(torch.float32).reshape(-1)[::2].mul_(0.5)
++        self.pending = torch.futures.Future(devices=[outputs[0].device])
++        self.last_work = _FakeWork(
++            self.pending, torch.cuda.current_stream().record_event()
++        )
++        return self.last_work
++
++
++@skipUnless(torch.cuda.is_available(), "CUDA is required")
++class QuantizedWorkTest(TestCase):
++    def _start(self, scatter, delay=False, generic_stream=False):
++        values = torch.tensor([1.0, 2.0], device="cuda")
++        output = torch.full_like(values, -1.0) if scatter else values
++        group = _FakeGroup(scatter)
++        stream = torch.Stream(device="cuda") if generic_stream else torch.cuda.Stream()
++        stream.wait_stream(torch.cuda.current_stream())
++        with torch.cuda.stream(cast(torch.cuda.Stream, stream)):
++            if delay:
++                torch.cuda._sleep(50_000_000)
++            if scatter:
++                work = reduce_scatter_quantized(
++                    output, [values], ReduceOp.SUM, cast(ProcessGroup, group), stream
++                )
++            else:
++                work = allreduce_quantized(
++                    [values], ReduceOp.SUM, cast(ProcessGroup, group), stream
++                )
++        return work, output, group
++
++    def test_wait_and_block_current_stream_include_postprocessing(self):
++        for scatter in (False, True):
++            for method in ("wait", "block_current_stream"):
++                with self.subTest(scatter=scatter, method=method):
++                    work, output, group = self._start(scatter)
++                    consumer = torch.cuda.Stream()
++                    with torch.cuda.stream(consumer):
++                        getattr(work, method)()
++                        actual = output.clone()
++                    consumer.synchronize()
++                    torch.testing.assert_close(
++                        actual.cpu(), torch.tensor([2.0, 4.0]), rtol=0.02, atol=0.05
++                    )
++                    group.pending.set_result([group.transport])
++
++    def test_future_composes_postprocessing_on_consumer_stream(self):
++        for scatter in (False, True):
++            for generic_stream in (False, True):
++                with self.subTest(scatter=scatter, generic_stream=generic_stream):
++                    work, output, group = self._start(
++                        scatter, delay=True, generic_stream=generic_stream
++                    )
++                    future = work.get_future()
++                    self.assertFalse(future.done())
++                    group.pending.set_result([group.transport])
++                    consumer = torch.cuda.Stream()
++                    with torch.cuda.stream(consumer):
++                        result = future.wait()
++                        actual = output.clone()
++                    consumer.synchronize()
++                    self.assertIs(result[0], output)
++                    torch.testing.assert_close(
++                        actual.cpu(), torch.tensor([2.0, 4.0]), rtol=0.02, atol=0.05
++                    )
++
++    def test_future_propagates_communication_errors(self):
++        for scatter in (False, True):
++            with self.subTest(scatter=scatter):
++                work, output, group = self._start(scatter)
++                future = work.get_future()
++                group.pending.set_exception(RuntimeError("communication failed"))
++                with self.assertRaisesRegex(RuntimeError, "communication failed"):
++                    future.wait()
++
++    def test_wait_forwards_timeout(self):
++        work, output, group = self._start(False)
++        timeout = timedelta(seconds=2)
++        self.assertTrue(work.wait(timeout))
++        self.assertEqual(group.last_work.last_timeout, timeout)
++        group.pending.set_result([group.transport])
++
++    def test_work_result_future_waits_for_postprocessing(self):
++        for scatter in (False, True):
++            with self.subTest(scatter=scatter):
++                work, output, group = self._start(scatter)
++                self.assertIs(work.get_future_result(), work.get_future_result())
++                group.last_work.status.set_result(0)
++                self.assertEqual(work.get_future_result().wait(), 0)
++                torch.testing.assert_close(
++                    output.cpu(), torch.tensor([2.0, 4.0]), rtol=0.02, atol=0.05
++                )
++                group.pending.set_result([group.transport])
++
++    def test_work_result_future_propagates_failure(self):
++        work, output, group = self._start(False)
++        group.last_work.status.set_exception(RuntimeError("status failure"))
++        with self.assertRaisesRegex(RuntimeError, "status failure"):
++            work.get_future_result().wait()
++        group.pending.set_result([group.transport])
++
++    def test_failed_backend_status_does_not_wait_for_postprocessing(self):
++        work, output, group = self._start(False)
++
++        class NeverCompletes:
++            def synchronize(self):
++                raise AssertionError("must not wait on a failed backend status")
++
++        setattr(work, "_done", NeverCompletes())
++        group.last_work.status.set_result(2)
++        self.assertEqual(work.get_future_result().wait(), 2)
++        group.pending.set_result([group.transport])
++
++    def test_is_completed_reports_backend_failure_without_querying_event(self):
++        work, output, group = self._start(False)
++        group.pending.set_result([group.transport])
++        self.assertFalse(work.is_completed())
++
++        class FailedDeviceEvent:
++            def query(self):
++                raise AssertionError("must not query an event after backend failure")
++
++        setattr(work, "_done", FailedDeviceEvent())
++        group.last_work.status.set_result(2)
++        self.assertTrue(work.is_completed())
++
++    def test_reduce_scatter_keeps_input_storage_alive_on_other_stream(self):
++        pending_checks = 0
++        for _ in range(5):
++            values = torch.tensor([1.0, 2.0], device="cuda")
++            address = values.data_ptr()
++            output = torch.full_like(values, -1.0)
++            stream = torch.cuda.Stream()
++            stream.wait_stream(torch.cuda.current_stream())
++            with torch.cuda.stream(stream):
++                torch.cuda._sleep(300_000_000)
++            group = _FakeGroup(True)
++            work = reduce_scatter_quantized(
++                output, [values], ReduceOp.SUM, cast(ProcessGroup, group), stream
++            )
++            del values
++            gc.collect()
++            allocations = [
++                torch.empty(2, device="cuda").fill_(-123.0) for _ in range(64)
++            ]
++            if not stream.query():
++                pending_checks += 1
++                self.assertTrue(all(item.data_ptr() != address for item in allocations))
++            work.wait()
++            torch.testing.assert_close(
++                output.cpu(), torch.tensor([2.0, 4.0]), rtol=0.02, atol=0.05
++            )
++            assert group.pending is not None
++            group.pending.set_result([group.transport])
++        self.assertGreater(pending_checks, 0)
