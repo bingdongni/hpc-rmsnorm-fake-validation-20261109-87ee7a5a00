@@ -1,0 +1,321 @@
+diff --git a/src/kv.ts b/src/kv.ts
+index e7ed695..acf9574 100644
+--- a/src/kv.ts
++++ b/src/kv.ts
+@@ -45,7 +45,7 @@ export const KV = {
+    */
+   github: { since: record<string>('github-since'), retries: record<Record<string, Retry>>('github-retry'),
+     cursor: family<string, [number: number]>('github-cursor:'),
+-    stream: family<{ since: string; started: Record<string, string>; etag?: string }, [stream: string]>('github-stream:'),
++    stream: family<{ since: string; started: Record<string, string>; etag?: string; complete?: boolean }, [stream: string]>('github-stream:'),
+     branchCi: record<{ branch?: string; failures?: string[]; revision: number }>('github-branch-ci'),
+     ci: family<{ fingerprint: string; revision: number }, [number: number]>('github-ci:') },
+   /**
+diff --git a/src/sources/github.ts b/src/sources/github.ts
+index f9b80b6..78ff570 100644
+--- a/src/sources/github.ts
++++ b/src/sources/github.ts
+@@ -195,10 +195,10 @@ async function pollRepository(ctx: SourceContext, round: Round): Promise<void> {
+   catch (error) { if (!stopped(ctx, round)) round.failures.push(`default branch CI: ${String(error)}`) }
+ }
+ /**
+- * Polls one repository-wide event stream (oldest first) since its cursor and steps the cursor to five seconds before the
+- * newest item (`cursorAt`), relying on Trigger ID deduplication so repeated messages are no-ops. While the cursor stays
+- * unchanged (including when clamped to the hourly horizon), sending the last page's ETag makes an unchanged list return
+- * HTTP 304 and cost no rate limit. Items from before their kind was switched on or beyond the horizon are ignored.
++ * Polls one repository-wide event stream oldest first, relying on Trigger ID deduplication for overlapping reads. Dense
++ * lists advance to the round's start after checking page boundaries; changed boundaries retain the first page's overlap.
++ * A single, non-full page's ETag saves rate limit while its cursor stays unchanged. Items before a kind was switched on or
++ * beyond the horizon are ignored.
+  */
+ async function readStream(ctx: SourceContext, round: Round, id: string, path: string, config: GithubConfig): Promise<void> {
+   const name = KV.github.stream(id)
+@@ -208,44 +208,79 @@ async function readStream(ctx: SourceContext, round: Round, id: string, path: st
+   const started: Record<string, string> = Object.fromEntries(kinds.map(kind => [kind, before[kind] ?? round.started]))
+   const horizon = Math.floor((Date.parse(round.started) - POLL_HORIZON_MS) / 3_600_000) * 3_600_000
+   const since = new Date(Math.max(Date.parse(stored?.since ?? round.started), horizon)).toISOString()
+-  const conditional = stored?.etag && stored.since === since ? ['-H', `If-None-Match: ${stored.etag}`] : []
+-  let raw: string
++  // Old ETags may describe only the first page, so use only ones recorded as complete by this version.
++  const conditional = stored?.complete && stored.etag && stored.since === since ? ['-H', `If-None-Match: ${stored.etag}`] : []
+   const listed = `${path}&sort=updated&direction=asc&per_page=100&since=${encodeURIComponent(since)}`
+-  try { raw = await ctx.commands.withSignal(round.signal).api(listed, '--include', ...conditional) }
+-  catch (error) {
+-    if (error instanceof CliError && error.code === 304) return
+-    throw error
+-  }
+-  const { headers, body } = included(raw)
+-  const items = validItems(ListedSchema, z.array(z.unknown()).parse(JSON.parse(body)), round.tally)
+   const { login } = ctx.deployment.github
+   const fresh = (at: string | null | undefined, kind: string) =>
+     kind in started && Date.parse(at ?? '') >= Math.max(Date.parse(started[kind]!), horizon)
+-  for (const item of items) {
+-    // Stopping mid-stream aborts before advancing the cursor so unread items are retried.
++  let page: string | undefined = listed, first = true, dense = false, stable = true, etag: string | undefined, newest = -Infinity
++  let previous: { path: string; body: string; etag?: string } | undefined
++  const visited = new Set<string>()
++  while (page) {
+     if (stopped(ctx, round)) throw new Error('The GitHub Source stopped during the poll')
+-    if (sameName(item.user.login, login)) continue
+-    if (id === 'issues') {
+-      const issue = IssueSchema.safeParse(item)
+-      const pr = issue.success && !!issue.data.pull_request
+-      if (!issue.success || !fresh(issue.data.created_at, pr ? 'pulls' : 'issues')) continue
+-      await ctx.receive(pr ? pullTrigger(issue.data, login) : issueTrigger(issue.data, login))
+-      nameThread(ctx, issue.data.number, issue.data.title)
+-      continue
++    if (visited.has(page)) throw new Error('GitHub returned a repeated next page')
++    visited.add(page)
++    let raw: string
++    try { raw = await ctx.commands.withSignal(round.signal).api(page, '--include', ...first ? conditional : []) }
++    catch (error) {
++      if (first && conditional.length && error instanceof CliError && error.code === 304) {
++        if (stopped(ctx, round)) throw new Error('The GitHub Source stopped during the poll')
++        ctx.state.set(name, { ...stored, started })
++        return
++      }
++      throw error
++    }
++    const { headers, body } = included(raw)
++    const values = z.array(z.unknown()).parse(JSON.parse(body))
++    // If a row moved out of the previous page before this page was read, an unread row may have shifted into it.
++    if (previous && stable) {
++      let check: string | undefined
++      try { check = await ctx.commands.withSignal(round.signal).api(previous.path, '--include',
++        ...previous.etag ? ['-H', `If-None-Match: ${previous.etag}`] : []) }
++      catch (error) { if (!(previous.etag && error instanceof CliError && error.code === 304)) throw error }
++      if (check) stable = JSON.stringify(z.array(z.unknown()).parse(JSON.parse(included(check).body))) === previous.body
++    }
++    const items = validItems(ListedSchema, values, round.tally)
++    const link = /^link:\s*(.+)$/im.exec(headers)?.[1]
++    const next = link && /<([^>]+)>;\s*rel="next"/i.exec(link)?.[1]
++    // Even without a next page, a full first page can gain one without changing its ETag.
++    const pageEtag = /^etag:\s*(.+)$/im.exec(headers)?.[1]?.trim()
++    if (first) {
++      dense = !!next || values.length >= 100
++      if (!dense) etag = pageEtag
++    }
++    for (const item of items) {
++      // Stopping mid-stream aborts before advancing the cursor so unread items are retried.
++      if (stopped(ctx, round)) throw new Error('The GitHub Source stopped during the poll')
++      if (sameName(item.user.login, login)) continue
++      if (id === 'issues') {
++        const issue = IssueSchema.safeParse(item)
++        const pr = issue.success && !!issue.data.pull_request
++        if (!issue.success || !fresh(issue.data.created_at, pr ? 'pulls' : 'issues')) continue
++        await ctx.receive(pr ? pullTrigger(issue.data, login) : issueTrigger(issue.data, login))
++        nameThread(ctx, issue.data.number, issue.data.title)
++        continue
++      }
++      const number = Number(/\/(?:issues|pulls)\/(\d+)$/.exec((id === 'comments' ? item.issue_url : item.pull_request_url) ?? '')?.[1])
++      if (!number || !fresh(item.updated_at ?? item.created_at, 'comments')) continue
++      const isPr = id === 'review-comments' || /\/pull\//.test(item.html_url ?? '')
++      const ref = { number, isPr, ...item.html_url ? { url: item.html_url } : {} }
++      const trigger = commentTrigger(item, ref, id === 'comments' ? 'conversation' : 'inline', login)
++      if (trigger.text) await ctx.receive(trigger)
+     }
+-    const number = Number(/\/(?:issues|pulls)\/(\d+)$/.exec((id === 'comments' ? item.issue_url : item.pull_request_url) ?? '')?.[1])
+-    if (!number || !fresh(item.updated_at ?? item.created_at, 'comments')) continue
+-    const isPr = id === 'review-comments' || /\/pull\//.test(item.html_url ?? '')
+-    const ref = { number, isPr, ...item.html_url ? { url: item.html_url } : {} }
+-    const trigger = commentTrigger(item, ref, id === 'comments' ? 'conversation' : 'inline', login)
+-    if (trigger.text) await ctx.receive(trigger)
++    // A changed page boundary may have shifted an unread row into the first page; keep its overlap for the next round.
++    if (first) newest = Math.max(...items.map(item => Date.parse(item.updated_at ?? '')).filter(Number.isFinite))
++    previous = { path: page, body: JSON.stringify(values), ...pageEtag ? { etag: pageEtag } : {} }
++    // Retain the repository-restricted path; GitHub's next link supplies only the query.
++    page = next ? `${path.split('?')[0]}${new URL(next).search}` : undefined
++    first = false
+   }
+-  const newest = Math.max(...items.map(item => Date.parse(item.updated_at ?? '')).filter(Number.isFinite))
+-  const moved = Number.isFinite(newest) ? cursorAt(new Date(newest).toISOString()) : since
++  if (stopped(ctx, round)) throw new Error('The GitHub Source stopped during the poll')
++  const moved = dense && stable ? cursorAt(round.started) : Number.isFinite(newest) ? cursorAt(new Date(newest).toISOString()) : since
+   const next = Date.parse(moved) > Date.parse(since) ? moved : since
+-  const etag = /^etag:\s*(.+)$/im.exec(headers)?.[1]?.trim()
+-  // The ETag belongs to this request, which the next round repeats only while the cursor stays unchanged.
+-  ctx.state.set(name, { since: next, started, ...etag && next === since ? { etag } : {} })
++  // The ETag belongs to this complete request, repeated only while the cursor stays unchanged.
++  ctx.state.set(name, { since: next, started, ...etag && next === since ? { etag, complete: true } : {} })
+ }
+ /** Polls default-branch CI checks, emitting a trigger only when the set of failing checks changes after the initial baseline. */
+ async function pollBranchCi(ctx: SourceContext, round: Round): Promise<void> {
+diff --git a/tests/sources.spec.ts b/tests/sources.spec.ts
+index f4d0332..84096e6 100644
+--- a/tests/sources.spec.ts
++++ b/tests/sources.spec.ts
+@@ -1233,7 +1233,7 @@ describe('observing the GitHub repository', () => {
+     expect(list()[0]![1]).toContain(`since=${encodeURIComponent(at(0))}`)
+     // The next round repeats the request at the newest Issue, whose ETag the round after sends, which GitHub answers 304 for.
+     await pollRound(h)
+-    expect(h.store.get('github-stream:issues')).toEqual({ since: cursorAt(at(4)), started, etag: '"same"' })
++    expect(h.store.get('github-stream:issues')).toEqual({ since: cursorAt(at(4)), started, etag: '"same"', complete: true })
+     h.receive.mockClear()
+     await pollRound(h)
+     expect(list().at(-1)).toEqual(expect.arrayContaining(['-H', 'If-None-Match: "same"']))
+@@ -1266,6 +1266,165 @@ describe('observing the GitHub repository', () => {
+       .toEqual([[7, false, 'conversation', true], [9, true, 'conversation', false], [9, true, 'inline', true]])
+     h.store.close()
+   })
++  it('reads every page when more than 100 items share an update time', async () => {
++    const h = host()
++    observe(h, { observeIssues: true })
++    h.store.set('github-since', at(-24))
++    h.store.set('github-stream:issues', { since: at(0), started: { issues: at(0) } })
++    const answers = Array.from({ length: 101 }, (_, index) => issue(index + 1, { created_at: at(1), updated_at: at(1) }))
++    repository(h, {})
++    const run = h.commands.run as unknown as { getMockImplementation(): (program: string, args: string[]) => Promise<string> }
++    const answer = run.getMockImplementation()
++    const pages: number[] = []
++    vi.mocked(h.commands.run).mockImplementation(async (program, args) => {
++      if (!args[1]!.startsWith('repos/acme/widgets/issues?')) return answer(program, args)
++      const url = new URL(`https://api.github.com/${args[1]}`)
++      const page = Number(url.searchParams.get('page') ?? 1)
++      pages.push(page)
++      if (args.includes('If-None-Match: "page-1"')) throw commandError({ stderr: 'gh: HTTP 304', code: 1 })
++      const since = Date.parse(url.searchParams.get('since')!)
++      const items = answers.filter(value => Date.parse(value.updated_at!) >= since)
++      url.pathname = '/repositories/123/issues'
++      url.searchParams.set('page', String(page + 1))
++      const next = page * 100 < items.length ? `Link: <${url}>; rel="next"\r\n` : ''
++      return `HTTP/2.0 200 OK\r\nETag: "page-${page}"\r\n${next}\r\n${JSON.stringify(items.slice((page - 1) * 100, page * 100))}`
++    })
++    await pollRound(h)
++    expect(pages).toEqual([1, 2, 1])
++    expect(h.receive.mock.calls.map(([trigger]) => trigger.meta.number)).toEqual(answers.map(value => value.number))
++    expect(Date.parse(h.store.get<{ since: string }>('github-stream:issues')!.since)).toBeGreaterThan(Date.parse(at(1)))
++    h.receive.mockClear()
++    await pollRound(h)
++    expect(pages).toEqual([1, 2, 1, 1])
++    expect(h.receive).not.toHaveBeenCalled()
++    h.store.close()
++  })
++  it.each([
++    { stream: 'comments', endpoint: 'issues/comments', ref: 'issue_url', kind: 'conversation' },
++    { stream: 'review-comments', endpoint: 'pulls/comments', ref: 'pull_request_url', kind: 'inline' },
++  ])('reads all pages of $stream', async ({ stream, endpoint, ref, kind }) => {
++    const h = host()
++    observe(h, { observeComments: true })
++    h.store.set('github-since', at(-24))
++    h.store.set(`github-stream:${stream}`, { since: at(0), started: { comments: at(0) } })
++    const comments = Array.from({ length: 101 }, (_, index) => ({ id: index + 1, body: `comment ${index + 1}`,
++      user: { login: 'carol', type: 'User' }, created_at: at(1), updated_at: at(1),
++      [ref]: `https://api.github.com/repos/acme/widgets/${kind === 'inline' ? 'pulls' : 'issues'}/7`,
++      html_url: `https://github.com/acme/widgets/${kind === 'inline' ? 'pull' : 'issues'}/7#comment-${index + 1}` }))
++    repository(h, {})
++    const run = h.commands.run as unknown as { getMockImplementation(): (program: string, args: string[]) => Promise<string> }
++    const answer = run.getMockImplementation()
++    vi.mocked(h.commands.run).mockImplementation(async (program, args) => {
++      if (!args[1]!.startsWith(`repos/acme/widgets/${endpoint}?`)) return answer(program, args)
++      const url = new URL(`https://api.github.com/${args[1]}`)
++      const page = Number(url.searchParams.get('page') ?? 1)
++      url.searchParams.set('page', String(page + 1))
++      const next = page === 1 ? `Link: <${url}>; rel="next"\r\n` : ''
++      return `HTTP/2.0 200 OK\r\n${next}\r\n${JSON.stringify(comments.slice((page - 1) * 100, page * 100))}`
++    })
++    await pollRound(h)
++    expect(h.receive).toHaveBeenCalledTimes(101)
++    expect(h.receive.mock.calls.every(([trigger]) => trigger.meta.kind === kind && trigger.meta.number === 7)).toBe(true)
++    h.store.close()
++  })
++  it('retries a failed later page without advancing the stream cursor', async () => {
++    const h = host()
++    observe(h, { observeIssues: true })
++    h.store.set('github-since', at(-24))
++    const saved = { since: at(0), started: { issues: at(0) } }
++    h.store.set('github-stream:issues', saved)
++    repository(h, {})
++    const run = h.commands.run as unknown as { getMockImplementation(): (program: string, args: string[]) => Promise<string> }
++    const answer = run.getMockImplementation()
++    let fail = true
++    vi.mocked(h.commands.run).mockImplementation(async (program, args) => {
++      if (!args[1]!.startsWith('repos/acme/widgets/issues?')) return answer(program, args)
++      const page = Number(new URL(`https://api.github.com/${args[1]}`).searchParams.get('page') ?? 1)
++      if (page === 2 && fail) throw refused(502, 'Bad Gateway')
++      const next = page === 1 ? 'Link: <https://api.github.com/repositories/123/issues?state=all&page=2>; rel="next"\r\n' : ''
++      return `HTTP/2.0 200 OK\r\n${next}\r\n${JSON.stringify([issue(page, { created_at: at(1), updated_at: at(1) })])}`
++    })
++    await expect(pollRound(h)).rejects.toThrow(/issues: .*502/)
++    expect(h.store.get('github-stream:issues')).toEqual(saved)
++    fail = false
++    await pollRound(h)
++    expect(h.receive.mock.calls.map(([trigger]) => trigger.meta.number)).toContain(2)
++    expect(Date.parse(h.store.get<{ since: string }>('github-stream:issues')!.since)).toBeGreaterThan(Date.parse(at(1)))
++    h.store.close()
++  })
++  it('does not condition a full first page, including an ETag saved by an older version', async () => {
++    const h = host()
++    observe(h, { observeIssues: true })
++    h.store.set('github-since', at(-24))
++    const now = new Date().toISOString()
++    h.store.set('github-stream:issues', { since: cursorAt(now), started: { issues: at(0) }, etag: '"page-1"' })
++    const first = Array.from({ length: 100 }, (_, index) => issue(index + 1, { created_at: now, updated_at: now }))
++    let second = false
++    repository(h, {})
++    const run = h.commands.run as unknown as { getMockImplementation(): (program: string, args: string[]) => Promise<string> }
++    const answer = run.getMockImplementation()
++    vi.mocked(h.commands.run).mockImplementation(async (program, args) => {
++      if (!args[1]!.startsWith('repos/acme/widgets/issues?')) return answer(program, args)
++      if (args.includes('If-None-Match: "page-1"')) throw commandError({ stderr: 'gh: HTTP 304', code: 1 })
++      const page = Number(new URL(`https://api.github.com/${args[1]}`).searchParams.get('page') ?? 1)
++      const next = page === 1 && second ? 'Link: <https://api.github.com/repositories/123/issues?state=all&page=2>; rel="next"\r\n' : ''
++      const items = page === 1 ? first : [issue(101, { created_at: now, updated_at: now })]
++      return `HTTP/2.0 200 OK\r\nETag: "page-1"\r\n${next}\r\n${JSON.stringify(items)}`
++    })
++    await pollRound(h)
++    expect(h.receive).toHaveBeenCalledTimes(100)
++    second = true
++    h.receive.mockClear()
++    await pollRound(h)
++    expect(h.receive.mock.calls.map(([trigger]) => trigger.meta.number)).toContain(101)
++    h.store.close()
++  })
++  it('keeps the first-page boundary when an update shifts an unread issue into it', async () => {
++    const h = host()
++    observe(h, { observeIssues: true })
++    h.store.set('github-since', at(-24))
++    h.store.set('github-stream:issues', { since: at(0), started: { issues: at(0) } })
++    const values = Array.from({ length: 102 }, (_, index) => issue(index + 1, {
++      created_at: at(1), updated_at: at(index < 100 ? 1 : index === 100 ? 2 : 3) }))
++    let shifted = false
++    repository(h, {})
++    const run = h.commands.run as unknown as { getMockImplementation(): (program: string, args: string[]) => Promise<string> }
++    const answer = run.getMockImplementation()
++    vi.mocked(h.commands.run).mockImplementation(async (program, args) => {
++      if (!args[1]!.startsWith('repos/acme/widgets/issues?')) return answer(program, args)
++      const url = new URL(`https://api.github.com/${args[1]}`)
++      const page = Number(url.searchParams.get('page') ?? 1)
++      const since = Date.parse(url.searchParams.get('since')!)
++      const sorted = values.filter(value => Date.parse(value.updated_at!) >= since)
++        .sort((a, b) => Date.parse(a.updated_at!) - Date.parse(b.updated_at!) || a.number - b.number)
++      const items = sorted.slice((page - 1) * 100, page * 100)
++      if (page === 1 && !shifted) { values[0] = { ...values[0]!, updated_at: at(4) }; shifted = true }
++      url.searchParams.set('page', String(page + 1))
++      const next = page * 100 < sorted.length ? `Link: <${url}>; rel="next"\r\n` : ''
++      return `HTTP/2.0 200 OK\r\n${next}\r\n${JSON.stringify(items)}`
++    })
++    await pollRound(h)
++    expect(h.receive.mock.calls.map(([trigger]) => trigger.meta.number)).not.toContain(101)
++    expect(h.store.get<{ since: string }>('github-stream:issues')!.since).toBe(cursorAt(at(1)))
++    h.receive.mockClear()
++    await pollRound(h)
++    expect(h.receive.mock.calls.map(([trigger]) => trigger.meta.number)).toContain(101)
++    h.store.close()
++  })
++  it('records when a newly observed kind starts even if the list returns 304', async () => {
++    const h = host()
++    observe(h, { observeIssues: true, observePulls: true })
++    h.store.set('github-since', at(-24))
++    h.store.set('github-stream:issues', { since: at(0), started: { issues: at(0) }, etag: '"same"', complete: true })
++    repository(h, {})
++    await pollRound(h)
++    const started = h.store.get<{ started: Record<string, string> }>('github-stream:issues')!.started
++    expect(started.pulls).toBeDefined()
++    observe(h, { observeIssues: true })
++    await pollRound(h)
++    expect(h.store.get<{ started: Record<string, string> }>('github-stream:issues')!.started.pulls).toBeUndefined()
++    h.store.close()
++  })
+   it('fails the round for a stream whose read fails, keeps its cursor, and still reads the other streams', async () => {
+     const h = host()
+     observe(h, { observeIssues: true, observeComments: true })
