@@ -1,0 +1,13 @@
+{
+  "captions.tsv": "f82d6f3ba482d07872072a9b4b0efe157e956f83486ed5eafc26420b6fd7da40",
+  "flickr-0.jpg": "afc0df1f8b8f855e4b26a540f42bfc09eb3e931e3e77e63af8f99ea59e2878c9",
+  "flickr-1.jpg": "a25401da8f1810a705c3d5c095b06085ac92ea818a51f77b2e60bd5dff2a089e",
+  "flickr-2.jpg": "97ddd7aa9b4cc6361430feccb637ce40ef50c564a9238c8745efba6c61c19c41",
+  "flickr-3.jpg": "230b882faabf96361224f3a53529fd6312efb7dee5b6848f5d2efbdaa4338ad9",
+  "flickr-4.jpg": "f29beff56654397d4f760fb7985b24836a78119dd8f88351430396683dc7e1c4",
+  "flickr-5.jpg": "1b957d7faf2e16e6266dd28877897a6f6cfcdc7ec967541b7bf4a49ebb83ffd9",
+  "flickr-6.jpg": "e6217368a6b2e664014242b821e887916a73bcc1a327bf62f0247b156b4489c1",
+  "flickr-7.jpg": "67d5f242a8317c8d8b0a44e27cca3fa47f40a083c70176905542512aba3980ea",
+  "open_clip_config.json": "a3991d6ba6ace5caf9443b08367036f90972b5263632d0ee44b2bb468a26b64a",
+  "open_clip_model.safetensors": "da0baa37fb2211eee5729ab69ed587eb10d48f5b7076ceeed01552fc3d4cb4ee"
+}
