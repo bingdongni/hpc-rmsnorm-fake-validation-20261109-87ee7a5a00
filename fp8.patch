@@ -1,0 +1,153 @@
+diff --git a/src/compressed_tensors/entrypoints/convert/converters/fp8block_dequantizer.py b/src/compressed_tensors/entrypoints/convert/converters/fp8block_dequantizer.py
+index 2d5c43a..91012eb 100644
+--- a/src/compressed_tensors/entrypoints/convert/converters/fp8block_dequantizer.py
++++ b/src/compressed_tensors/entrypoints/convert/converters/fp8block_dequantizer.py
+@@ -10,11 +10,13 @@ from compressed_tensors.quantization import QuantizationConfig
+ from compressed_tensors.quantization.utils.helpers import (
+     maybe_pad_tensor_for_block_quant,
+ )
++from compressed_tensors.utils.impl_backend import ImplBackend
+ from compressed_tensors.utils.match import match_name
+ from compressed_tensors.utils.safetensors_load import (
+     get_checkpoint_files,
+     get_weight_map,
+ )
++from compressed_tensors.utils.triton import HAS_TRITON, tl, triton
+ 
+ 
+ class FP8BlockDequantizer(Converter):
+@@ -155,6 +157,7 @@ class FP8BlockDequantizer(Converter):
+             or any(match_name(module_name, target) for target in self.targets)
+         )
+ 
++    @ImplBackend.entrypoint("dequantize_fp8_block")
+     def _create_dequantized_weight(
+         self, weight: torch.Tensor, weight_scale_inv: torch.Tensor
+     ) -> torch.Tensor:
+@@ -203,3 +206,66 @@ class FP8BlockDequantizer(Converter):
+             dequantized = dequantized[tuple([slice(v) for v in original_shape])]
+ 
+         return dequantized
++
++
++def _can_dequantize_fp8_block(converter, weight, weight_scale_inv):
++    if not (
++        HAS_TRITON
++        and weight.is_cuda
++        and torch.version.hip is None
++        and weight.device == weight_scale_inv.device
++        and weight.ndim == 2
++        and weight.numel() > 0
++        and weight.is_contiguous()
++        and weight_scale_inv.is_contiguous()
++        and weight.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
++        and weight_scale_inv.dtype in (torch.bfloat16, torch.float16, torch.float32)
++        and converter.dtype in (torch.bfloat16, torch.float16, torch.float32)
++        and not (
++            torch.is_grad_enabled()
++            and (weight.requires_grad or weight_scale_inv.requires_grad)
++        )
++        and torch.cuda.get_device_capability(weight.device) >= (8, 9)
++    ):
++        return False
++
++    rows, cols = weight.shape
++    h, w = converter.weight_block_size
++    return (
++        h > 0
++        and w > 0
++        and weight_scale_inv.shape == (triton.cdiv(rows, h), triton.cdiv(cols, w))
++    )
++
++
++@triton.jit
++def _dequantize_fp8_block_kernel(
++    weight,
++    scales,
++    out,
++    numel,
++    COLS: tl.constexpr,
++    H: tl.constexpr,
++    W: tl.constexpr,
++    TILE: tl.constexpr,
++):
++    offsets = tl.program_id(0).to(tl.int64) * TILE + tl.arange(0, TILE)
++    rows = offsets // COLS
++    cols = offsets % COLS
++    scale_offsets = (rows // H) * tl.cdiv(COLS, W) + cols // W
++    mask = offsets < numel
++    values = tl.load(weight + offsets, mask, other=0.0).to(tl.float32)
++    scale = tl.load(scales + scale_offsets, mask, other=0).to(tl.float32)
++    tl.store(out + offsets, values * scale, mask)
++
++
++@ImplBackend.register("dequantize_fp8_block", _can_dequantize_fp8_block, 0)
++def _dequantize_fp8_block_triton(converter, weight, weight_scale_inv):
++    out = torch.empty_like(weight, dtype=converter.dtype)
++    h, w = converter.weight_block_size
++    tile = 512
++    with torch.cuda.device(weight.device):
++        _dequantize_fp8_block_kernel[(triton.cdiv(weight.numel(), tile),)](
++            weight, weight_scale_inv, out, weight.numel(), weight.size(1), h, w, tile
++        )
++    return out
+diff --git a/tests/test_entrypoints/convert/converters/test_fp8block_dequantizer.py b/tests/test_entrypoints/convert/converters/test_fp8block_dequantizer.py
+index ba050d6..1e67229 100644
+--- a/tests/test_entrypoints/convert/converters/test_fp8block_dequantizer.py
++++ b/tests/test_entrypoints/convert/converters/test_fp8block_dequantizer.py
+@@ -4,6 +4,55 @@
+ import pytest
+ import torch
+ from compressed_tensors.entrypoints.convert import FP8BlockDequantizer
++from compressed_tensors.utils.impl_backend import ImplBackend
++from compressed_tensors.utils.triton import HAS_TRITON
++
++
++@pytest.mark.unit
++@pytest.mark.skipif(
++    not (
++        HAS_TRITON
++        and torch.cuda.is_available()
++        and torch.version.hip is None
++        and torch.cuda.get_device_capability() >= (8, 9)
++    ),
++    reason="requires Triton and CUDA FP8 support",
++)
++@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
++@pytest.mark.parametrize(
++    "fp8,scale_dtype,shape,block",
++    [
++        (torch.float8_e4m3fn, torch.bfloat16, (256, 384), (128, 128)),
++        (torch.float8_e5m2, torch.float32, (35, 67), (7, 12)),
++        (torch.float8_e4m3fn, torch.float16, (1, 3), (16, 16)),
++    ],
++)
++def test_fp8_block_triton(dtype, fp8, scale_dtype, shape, block):
++    weight = torch.randn(shape, device="cuda").to(fp8)
++    rows, cols = shape
++    h, w = block
++    scales = torch.randn(
++        (rows + h - 1) // h, (cols + w - 1) // w, dtype=scale_dtype, device="cuda"
++    )
++    converter = FP8BlockDequantizer(weight_block_size=block, dtype=dtype)
++    actual = ImplBackend.call("_dequantize_fp8_block_triton", converter, weight, scales)
++    expanded = scales.repeat_interleave(h, 0).repeat_interleave(w, 1)[:rows, :cols]
++    expected = (weight.float() * expanded.float()).to(dtype)
++    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
++
++
++@pytest.mark.unit
++@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
++def test_fp8_block_scale_gradient():
++    weight = torch.arange(32, device="cuda").reshape(4, 8).to(torch.float8_e4m3fn)
++    scales = torch.ones(2, 2, device="cuda", requires_grad=True)
++    converter = FP8BlockDequantizer(weight_block_size=(2, 4), dtype=torch.float32)
++    converted = converter.process(
++        {"proj.weight": weight, "proj.weight_scale_inv": scales}
++    )
++    converted["proj.weight"].sum().backward()
++    expected = weight.float().reshape(2, 2, 2, 4).sum(dim=(1, 3))
++    torch.testing.assert_close(scales.grad, expected, atol=0, rtol=0)
+ 
+ 
+ @pytest.mark.unit
