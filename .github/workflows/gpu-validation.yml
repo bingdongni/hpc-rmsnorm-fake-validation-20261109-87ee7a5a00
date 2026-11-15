@@ -1,45 +1,77 @@
-name: RMSNorm fake output validation
-
+name: FP8 block checkpoint conversion
 on:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
-    env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+  cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          path: validation
           persist-credentials: false
-      - name: Verify source hashes and CUDA device
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: vllm-project/compressed-tensors
+          ref: 70e7167581860af0807546879e3cd0357085e246
+          path: ct
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Check the patch, eager converter and checkpoint tests
+        working-directory: ct
         run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
+          test "$(git rev-parse HEAD)" = 70e7167581860af0807546879e3cd0357085e246
+          echo '96715df8ef807615ebb8a67fbdf697080d68c89524606475ca1abf9c877e6f94  ../validation/fp8.patch' | sha256sum --check
+          git apply ../validation/fp8.patch
+          python -m pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install . pytest accelerate 'black==22.12.0' 'isort==5.8.0' flake8
+          files=(src/compressed_tensors/entrypoints/convert/converters/fp8block_dequantizer.py tests/test_entrypoints/convert/converters/test_fp8block_dequantizer.py)
+          python -m black --target-version py311 --check "${files[@]}"
+          python -m isort --check-only "${files[@]}"
+          python -m flake8 "${files[@]}"
+          python -m pytest -q --tb=short tests/test_entrypoints/convert/converters/test_fp8block_dequantizer.py tests/test_entrypoints/convert/test_convert_checkpoint.py
+  cuda:
+    runs-on: [self-hosted, Windows, X64, fp8-block-dequant-f3c5c6756a]
+    timeout-minutes: 15
+    env:
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.longpaths
+      GIT_CONFIG_VALUE_0: 'true'
+      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
+      MASK_USER: ${{ secrets.MASK_USER }}
+      PYTHONUTF8: '1'
+      HF_HUB_OFFLINE: '1'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: validation
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: vllm-project/compressed-tensors
+          ref: 70e7167581860af0807546879e3cd0357085e246
+          path: ct
+          persist-credentials: false
+      - name: Validate the CUDA kernel and full conversion of a Qwen checkpoint layer
+        working-directory: ct
         run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+          if ((git rev-parse HEAD) -ne '70e7167581860af0807546879e3cd0357085e246') { throw 'Unexpected upstream commit' }
+          if ((Get-FileHash ..\validation\fp8.patch).Hash -ne '96715df8ef807615ebb8a67fbdf697080d68c89524606475ca1abf9c877e6f94') { throw 'Unexpected patch' }
+          git apply ..\validation\fp8.patch
+          if ($LASTEXITCODE) { throw 'Patch application failed' }
+          $python = 'C:\PR\torchao-gpu-venv-20261109\Scripts\python.exe'
+          & uv pip install --python $python --no-deps --target "$env:RUNNER_TEMP\ct-wheel" .
+          if ($LASTEXITCODE) { throw 'Build failed' }
+          $env:PYTHONPATH = "$PWD\src;C:\PR\pr-followup-20261115-evening\ct-deps;C:\PR\fla-research-deps-20261110;C:\PR\fla-model-deps-20261110"
+          $env:CUDA_PATH = 'C:\PR\fla-research-deps-20261110\triton\backends\nvidia'
+          $env:CC = 'C:\PR\fla-research-deps-20261110\triton\runtime\tcc\tcc.exe'
+          & $python -c "from pathlib import Path; import compressed_tensors,torch; assert Path(compressed_tensors.__file__).resolve().is_relative_to(Path.cwd() / 'src'); assert torch.cuda.is_available(); print(torch.__version__, torch.cuda.get_device_name())"
+          if ($LASTEXITCODE) { throw 'Source or GPU check failed' }
+          & $python -m pytest -q --tb=short tests/test_entrypoints/convert/converters/test_fp8block_dequantizer.py tests/test_entrypoints/convert/test_convert_checkpoint.py
+          if ($LASTEXITCODE) { throw 'CUDA tests failed' }
+          & $python ..\validation\qwen_fp8_probe.py
+          if ($LASTEXITCODE) { throw 'Checkpoint parity or memory check failed' }
