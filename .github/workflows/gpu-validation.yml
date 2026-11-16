@@ -1,45 +1,197 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: Soft-DTW, Sinkhorn and dense ODE regression tests
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
+  linux:
+    name: Public API regressions (Linux CPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
     env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '1'
+      NUMBA_NUM_THREADS: '2'
+      PYTHONUTF8: '1'
+    steps:
+    - &id001
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        path: validation
+        persist-credentials: false
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: bingdongni/tslearn
+        ref: bded6edf13d3618ecde2f25dcc1435253a56b26a
+        fetch-depth: 4
+        path: tslearn
+        persist-credentials: false
+    - name: Check out parent of tslearn
+      run: git -C tslearn worktree add --detach ../tslearn-base-f63e0746 d848642f5c8219126a22b500a975611a38607f20
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: bingdongni/POT
+        ref: be3345eaad3236cf098ee99f67f6003501d7b54b
+        fetch-depth: 4
+        path: pot
+        persist-credentials: false
+    - name: Check out parent of POT
+      run: git -C pot worktree add --detach ../pot-base-f63e0746 3367480db2b0861a2c5d61b091d661529e7558a8
+    - name: Check out first device-native implementation
+      run: git -C pot worktree add --detach ../pot-first-f63e0746 1d1b9999e8bb062b5664682a1a7c78c8e57b33dc
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: bingdongni/torchdiffeq
+        ref: 13c831899d19b963cd144b6160b992c79589382e
+        fetch-depth: 4
+        path: diffeq
+        persist-credentials: false
+    - name: Check out parent of torchdiffeq
+      run: git -C diffeq worktree add --detach ../diffeq-base-f63e0746 657943acefa826ef04c025ebeb1ff5e9d60dc268
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Build POT from source and install test dependencies
+      run: 'sudo apt-get update -qq && sudo apt-get install -y libeigen3-dev
+
+        python -m pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
+
+        CPLUS_INCLUDE_PATH=/usr/include/eigen3 python -m pip install -e ./pot
+
+        python -m pip install pytest numba statsmodels scikit-learn h5py'
+    - name: 'tslearn: compare parent, candidate and run tests'
+      run: 'python validation/compare.py tslearn tslearn-base-f63e0746 cpu base
+
+        python validation/compare.py tslearn tslearn cpu candidate
+
+        python validation/test_suite.py tslearn'
+    - name: 'POT: compare parent, candidate and run tests'
+      run: 'python validation/compare.py pot pot-base-f63e0746 cpu base
+
+        python validation/compare.py pot pot cpu candidate
+
+        python validation/compare.py autocast pot-base-f63e0746 cpu base
+
+        python validation/compare.py autocast pot-first-f63e0746 cpu first
+
+        python validation/compare.py autocast pot cpu candidate
+
+        python validation/test_suite.py pot'
+    - name: 'torchdiffeq: compare parent, candidate and run tests'
+      run: 'python validation/compare.py diffeq diffeq-base-f63e0746 cpu base
+
+        python validation/compare.py diffeq diffeq cpu candidate
+
+        python validation/test_suite.py diffeq'
+  gpu:
+    name: Public API regressions (RTX 4060)
+    runs-on:
+    - self-hosted
+    - Windows
+    - X64
+    - research-solvers-77b0ac0961
+    timeout-minutes: 40
+    env:
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.longpaths
+      GIT_CONFIG_VALUE_0: 'true'
       MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
       MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+      PYTHONUTF8: '1'
+      HF_HUB_OFFLINE: '1'
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+      NUMBA_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - *id001
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: bingdongni/tslearn
+        ref: bded6edf13d3618ecde2f25dcc1435253a56b26a
+        fetch-depth: 4
+        path: tslearn
+        persist-credentials: false
+    - name: Check out parent of tslearn
+      run: git -C tslearn worktree add --detach ../tslearn-base-f63e0746 d848642f5c8219126a22b500a975611a38607f20
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: bingdongni/POT
+        ref: be3345eaad3236cf098ee99f67f6003501d7b54b
+        fetch-depth: 4
+        path: pot
+        persist-credentials: false
+    - name: Check out parent of POT
+      run: git -C pot worktree add --detach ../pot-base-f63e0746 3367480db2b0861a2c5d61b091d661529e7558a8
+    - name: Check out first device-native implementation
+      run: git -C pot worktree add --detach ../pot-first-f63e0746 1d1b9999e8bb062b5664682a1a7c78c8e57b33dc
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: bingdongni/torchdiffeq
+        ref: 13c831899d19b963cd144b6160b992c79589382e
+        fetch-depth: 4
+        path: diffeq
+        persist-credentials: false
+    - name: Check out parent of torchdiffeq
+      run: git -C diffeq worktree add --detach ../diffeq-base-f63e0746 657943acefa826ef04c025ebeb1ff5e9d60dc268
+    - name: 'tslearn: compare parent, candidate and run tests'
+      run: '& ''C:\PR\pr-followup-20261116-0830\work-env\Scripts\python.exe'' validation/compare.py
+        tslearn tslearn-base-f63e0746 cuda base
+
+        if ($LASTEXITCODE) { throw ''Public entry point comparison failed'' }
+
+        & ''C:\PR\pr-followup-20261116-0830\work-env\Scripts\python.exe'' validation/compare.py
+        tslearn tslearn cuda candidate
+
+        if ($LASTEXITCODE) { throw ''Public entry point comparison failed'' }
+
+        & ''C:\PR\pr-followup-20261116-0830\work-env\Scripts\python.exe'' validation/test_suite.py
+        tslearn
+
+        if ($LASTEXITCODE) { throw ''Regression tests failed'' }'
+    - name: 'POT: compare parent, candidate and run tests'
+      run: '& ''C:\PR\pr-followup-20261116-0830\work-env\Scripts\python.exe'' validation/compare.py
+        pot pot-base-f63e0746 cuda base
+
+        if ($LASTEXITCODE) { throw ''Public entry point comparison failed'' }
+
+        & ''C:\PR\pr-followup-20261116-0830\work-env\Scripts\python.exe'' validation/compare.py
+        pot pot cuda candidate
+
+        if ($LASTEXITCODE) { throw ''Public entry point comparison failed'' }
+
+        & ''C:\PR\pr-followup-20261116-0830\work-env\Scripts\python.exe'' validation/compare.py
+        autocast pot-base-f63e0746 cuda base
+
+        if ($LASTEXITCODE) { throw ''Mixed precision comparison failed'' }
+
+        & ''C:\PR\pr-followup-20261116-0830\work-env\Scripts\python.exe'' validation/compare.py
+        autocast pot-first-f63e0746 cuda first
+
+        if ($LASTEXITCODE) { throw ''Mixed precision comparison failed'' }
+
+        & ''C:\PR\pr-followup-20261116-0830\work-env\Scripts\python.exe'' validation/compare.py
+        autocast pot cuda candidate
+
+        if ($LASTEXITCODE) { throw ''Mixed precision comparison failed'' }
+
+        & ''C:\PR\pr-followup-20261116-0830\work-env\Scripts\python.exe'' validation/test_suite.py
+        pot
+
+        if ($LASTEXITCODE) { throw ''Regression tests failed'' }'
+    - name: 'torchdiffeq: compare parent, candidate and run tests'
+      run: '& ''C:\PR\pr-followup-20261116-0830\work-env\Scripts\python.exe'' validation/compare.py
+        diffeq diffeq-base-f63e0746 cuda base
+
+        if ($LASTEXITCODE) { throw ''Public entry point comparison failed'' }
+
+        & ''C:\PR\pr-followup-20261116-0830\work-env\Scripts\python.exe'' validation/compare.py
+        diffeq diffeq cuda candidate
+
+        if ($LASTEXITCODE) { throw ''Public entry point comparison failed'' }
+
+        & ''C:\PR\pr-followup-20261116-0830\work-env\Scripts\python.exe'' validation/test_suite.py
+        diffeq
+
+        if ($LASTEXITCODE) { throw ''Regression tests failed'' }'
