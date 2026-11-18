@@ -1,45 +1,164 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: Validate histogram transport, quantization, and dataset operations
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
+env:
+  PYTHONUTF8: '1'
+  OMP_NUM_THREADS: '1'
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
+  training:
+    name: Two-rank Gloo and sampler tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        path: validation
+        persist-credentials: false
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        path: wids
+        persist-credentials: false
+        repository: bingdongni/wids
+        ref: 4ba7661276c80df5e6c31fe7dec8915092d4d1b8
+    - &id001
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Install CPU sampler dependencies
+      run: 'python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+        python -m pip install ./wids pytest pillow requests'
+    - name: Run DataLoader on two ranks
+      run: 'torchrun --standalone --nproc_per_node=2 validation/gloo.py
+
+        cd wids && python -m pytest -q tests/test_wids.py -k ampler'
+  forecast:
+    name: Area-weighted categorical forecasts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        path: validation
+        persist-credentials: false
+    - &id002
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        path: xs
+        persist-credentials: false
+        repository: bingdongni/xskillscore
+        ref: 9289524e682e1c1b0a9826ded31b2b10b0a0e704
+    - *id001
+    - name: Install test dependencies
+      run: python -m pip install ./xs pytest scikit-learn cftime
+    - name: Test all contingency scores
+      run: cd xs && python -m pytest -q -o addopts= xskillscore/tests/test_contingency.py
+  agent:
+    name: Offline RL dataset views
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        path: validation
+        persist-credentials: false
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        path: minari
+        persist-credentials: false
+        repository: bingdongni/Minari
+        ref: e395dba56387c34dfa355057a7debfa06308e403
+    - *id001
+    - name: Install storage backends
+      run: python -m pip install "./minari[arrow,hdf5,create]" pytest
+    - name: Test both storage formats
+      run: cd minari && python -m pytest -q tests/data_collector/test_appended_episode_statistics.py
+  schema:
+    name: OCSF schema validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        path: validation
+        persist-credentials: false
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        path: ocsf
+        persist-credentials: false
+        repository: bingdongni/ocsf-validator
+        ref: c11e451fad2ffc6cbab03940ebfc8a045912d616
+    - *id001
+    - name: Install schema validator
+      run: python -m pip install ./ocsf pytest
+    - name: Run validator suite
+      run: cd ocsf && python -m pytest -q
+  gpu:
+    name: RTX 4060 histogram transport and 3-bit reconstruction
+    runs-on:
+    - self-hosted
+    - Windows
+    - X64
+    - ops-training-d5bef4d828
+    timeout-minutes: 25
     env:
       MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
       MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - name: Mask runner identifiers
+      run: 'Write-Output "::add-mask::$env:MASK_MACHINE"
+
+        Write-Output "::add-mask::$env:MASK_USER"'
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        path: validation
+        persist-credentials: false
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        path: torchist
+        persist-credentials: false
+        repository: bingdongni/torchist
+        ref: e00c0107a4f2d8192bdd6177b4176f6a197d79f6
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        path: hqq
+        persist-credentials: false
+        repository: bingdongni/hqq
+        ref: 41b1586dd694f481208b4d91c6ff6a270f3ec551
+    - name: Check CUDA numerical references and project tests
+      run: '$env:PYTHONPATH = (Resolve-Path torchist).Path + '';'' + (Resolve-Path
+        hqq).Path + '';'' + ''C:/PR/pr-followup-20261118-0818/hqq-deps''
+
+        & ''C:\PR\pr-followup-20261117-2120\env\Scripts\python.exe'' validation/gpu_check.py
+
+        if ($LASTEXITCODE) { throw ''numerical comparison failed'' }
+
+        Push-Location torchist
+
+        & ''C:\PR\pr-followup-20261117-2120\env\Scripts\python.exe'' -m pytest -q
+        --device=cuda
+
+        if ($LASTEXITCODE) { throw ''histogram tests failed'' }
+
+        Pop-Location
+
+        Push-Location hqq
+
+        & ''C:\PR\pr-followup-20261117-2120\env\Scripts\python.exe'' -m pytest -q
+        tests/test_3bit_dequantize.py
+
+        if ($LASTEXITCODE) { throw ''quantization tests failed'' }
+
+        Pop-Location'
+  hooks:
+    name: Forecast project pre-commit hooks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+    - *id002
+    - *id001
+    - name: Run project checks on Linux
+      run: python -m pip install pre-commit && cd xs && pre-commit run --all-files
