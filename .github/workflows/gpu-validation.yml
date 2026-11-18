@@ -1,4 +1,4 @@
-name: Validate histogram transport, quantization, and dataset operations
+name: Validate HDF5, Arrow and Parquet episode selection
 'on':
   workflow_dispatch: {}
 permissions:
@@ -8,54 +8,6 @@ env:
   OMP_NUM_THREADS: '1'
   PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
 jobs:
-  training:
-    name: Two-rank Gloo and sampler tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      with:
-        path: validation
-        persist-credentials: false
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      with:
-        path: wids
-        persist-credentials: false
-        repository: bingdongni/wids
-        ref: 4ba7661276c80df5e6c31fe7dec8915092d4d1b8
-    - &id001
-      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-      with:
-        python-version: '3.12'
-    - name: Install CPU sampler dependencies
-      run: 'python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-        python -m pip install ./wids pytest pillow requests'
-    - name: Run DataLoader on two ranks
-      run: 'torchrun --standalone --nproc_per_node=2 validation/gloo.py
-
-        cd wids && python -m pytest -q tests/test_wids.py -k ampler'
-  forecast:
-    name: Area-weighted categorical forecasts
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      with:
-        path: validation
-        persist-credentials: false
-    - &id002
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      with:
-        path: xs
-        persist-credentials: false
-        repository: bingdongni/xskillscore
-        ref: 9289524e682e1c1b0a9826ded31b2b10b0a0e704
-    - *id001
-    - name: Install test dependencies
-      run: python -m pip install ./xs pytest scikit-learn cftime
-    - name: Test all contingency scores
-      run: cd xs && python -m pytest -q -o addopts= xskillscore/tests/test_contingency.py
   agent:
     name: Offline RL dataset views
     runs-on: ubuntu-24.04
@@ -71,94 +23,10 @@ jobs:
         persist-credentials: false
         repository: bingdongni/Minari
         ref: e395dba56387c34dfa355057a7debfa06308e403
-    - *id001
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
     - name: Install storage backends
-      run: python -m pip install "./minari[arrow,hdf5,create]" pytest
+      run: python -m pip install "./minari[arrow,hdf5,create]" pytest pillow
     - name: Test both storage formats
       run: cd minari && python -m pytest -q tests/data_collector/test_appended_episode_statistics.py
-  schema:
-    name: OCSF schema validation
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      with:
-        path: validation
-        persist-credentials: false
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      with:
-        path: ocsf
-        persist-credentials: false
-        repository: bingdongni/ocsf-validator
-        ref: c11e451fad2ffc6cbab03940ebfc8a045912d616
-    - *id001
-    - name: Install schema validator
-      run: python -m pip install ./ocsf pytest
-    - name: Run validator suite
-      run: cd ocsf && python -m pytest -q
-  gpu:
-    name: RTX 4060 histogram transport and 3-bit reconstruction
-    runs-on:
-    - self-hosted
-    - Windows
-    - X64
-    - ops-training-d5bef4d828
-    timeout-minutes: 25
-    env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-    steps:
-    - name: Mask runner identifiers
-      run: 'Write-Output "::add-mask::$env:MASK_MACHINE"
-
-        Write-Output "::add-mask::$env:MASK_USER"'
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      with:
-        path: validation
-        persist-credentials: false
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      with:
-        path: torchist
-        persist-credentials: false
-        repository: bingdongni/torchist
-        ref: e00c0107a4f2d8192bdd6177b4176f6a197d79f6
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      with:
-        path: hqq
-        persist-credentials: false
-        repository: bingdongni/hqq
-        ref: 41b1586dd694f481208b4d91c6ff6a270f3ec551
-    - name: Check CUDA numerical references and project tests
-      run: '$env:PYTHONPATH = (Resolve-Path torchist).Path + '';'' + (Resolve-Path
-        hqq).Path + '';'' + ''C:/PR/pr-followup-20261118-0818/hqq-deps''
-
-        & ''C:\PR\pr-followup-20261117-2120\env\Scripts\python.exe'' validation/gpu_check.py
-
-        if ($LASTEXITCODE) { throw ''numerical comparison failed'' }
-
-        Push-Location torchist
-
-        & ''C:\PR\pr-followup-20261117-2120\env\Scripts\python.exe'' -m pytest -q
-        --device=cuda
-
-        if ($LASTEXITCODE) { throw ''histogram tests failed'' }
-
-        Pop-Location
-
-        Push-Location hqq
-
-        & ''C:\PR\pr-followup-20261117-2120\env\Scripts\python.exe'' -m pytest -q
-        tests/test_3bit_dequantize.py
-
-        if ($LASTEXITCODE) { throw ''quantization tests failed'' }
-
-        Pop-Location'
-  hooks:
-    name: Forecast project pre-commit hooks
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    steps:
-    - *id002
-    - *id001
-    - name: Run project checks on Linux
-      run: python -m pip install pre-commit && cd xs && pre-commit run --all-files
