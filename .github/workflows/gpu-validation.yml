@@ -1,45 +1,92 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: Check graph counts and optimization model interfaces
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
+  igraph:
+    name: Build native igraph and verify incident triangle counts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
     env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+      MPLBACKEND: Agg
+      OMP_NUM_THREADS: '2'
+      CMAKE_BUILD_PARALLEL_LEVEL: '3'
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: bingdongni/python-igraph
+        ref: afbabc01bb43c8531f147428f5fb497375655658
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Build, exercise the public interface and compare results
+      run: "sudo apt-get update -qq\nsudo apt-get install -y flex bison libxml2-dev\
+        \ libglpk-dev libcairo2-dev\ngit submodule update --init --depth=1 vendor/source/igraph\n\
+        python -m pip install . pytest networkx numpy\npython -m pytest -q tests/test_motifs.py\
+        \ tests/test_structural.py\npython - <<'PY'\nimport igraph as ig\nimport tracemalloc\n\
+        from math import comb\nn=120\ng=ig.Graph.Full(n)\ndef peak(fn):\n    tracemalloc.start()\n\
+        \    try:\n        out=fn()\n        return out,tracemalloc.get_traced_memory()[1]\n\
+        \    finally:\n        tracemalloc.stop()\ncounts,small=peak(g.count_adjacent_triangles)\n\
+        tri,large=peak(g.list_triangles)\nassert len(tri)==comb(n,3) and counts==[comb(n-1,2)]*n\n\
+        print('Python allocations on K120:',len(tri),'triangles, count',small,'bytes\
+        \ vs list',large,'bytes')\nassert small<large//10\nPY"
+  pot:
+    name: Rectangular LP barycenters with HiGHS and CVXOPT
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    env:
+      MPLBACKEND: Agg
+      OMP_NUM_THREADS: '2'
+      CMAKE_BUILD_PARALLEL_LEVEL: '3'
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: bingdongni/POT
+        ref: 29cf4fae3be4d392d93a0e4f3a0675a69343e48b
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Build, exercise the public interface and compare results
+      run: "sudo apt-get update -qq\nsudo apt-get install -y libeigen3-dev\nexport\
+        \ CPLUS_INCLUDE_PATH=/usr/include/eigen3\npython -m pip install -e . pytest\
+        \ cvxopt matplotlib\npython -m pytest -q test/test_ot.py -k lp_barycenter\n\
+        python examples/barycenters/plot_barycenter_output_grid.py\npython - <<'PY'\n\
+        import numpy as np\nimport ot\nfrom scipy.optimize import minimize_scalar\n\
+        rng=np.random.default_rng(716)\nfor n in [5,31,96]:\n    hist=rng.random((n,4));hist/=hist.sum(axis=0)\n\
+        \    sites=np.linspace(-1,2,n)\n    M=(sites[:,None]-np.array([-0.8,1.1]))**2\n\
+        \    w=np.array([.11,.19,.29,.41])\n    q=ot.lp.barycenter(hist,M,w)\n   \
+        \ def objective(t):\n        return sum(w[j]*ot.emd2(hist[:,j],np.array([t,1-t]),M)\
+        \ for j in range(4))\n    ref=minimize_scalar(objective,bounds=(0,1),method='bounded',options={'xatol':1e-12})\n\
+        \    assert abs(objective(q[0])-ref.fun)<1e-8\n    print('independent nested\
+        \ EMD objective',n,'bins',objective(q[0]),'vs',ref.fun)\nPY"
+  linopy:
+    name: Piecewise row scaling with direct HiGHS LP and MIP
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    env:
+      MPLBACKEND: Agg
+      OMP_NUM_THREADS: '2'
+      CMAKE_BUILD_PARALLEL_LEVEL: '3'
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: bingdongni/linopy
+        ref: 6753b6a4fb5879c5f1aac3db84c147c5e2f45c57
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Build, exercise the public interface and compare results
+      run: "python -m pip install -e . highspy pytest ruff\nruff check linopy/piecewise.py\
+        \ test/test_piecewise_constraints.py\npython -m pytest -q test/test_piecewise_constraints.py\
+        \ -k \"row_scaling or scaling_is_atomic or LPEligibilityReasons\"\npython\
+        \ - <<'PY'\nimport linopy as lp\nimport numpy as np\nfor method in ['lp','incremental']:\n\
+        \ for scale in [1.,(0.1,0.01)]:\n  m=lp.Model();x=m.add_variables(lower=0,name='dispatch');y=m.add_variables(lower=0,name='cost')\n\
+        \  m.add_piecewise_formulation((x,[0,10,20]),(y,[0,100,300],'>='),method=method,name='curve',scaling=scale)\n\
+        \  m.add_constraints(x >= 15,name='demand');m.add_objective(y)\n  result=m.solve(solver_name='highs',io_api='direct',log_to_console=False)\n\
+        \  assert result==('ok','optimal') and np.isclose(x.solution.item(),15) and\
+        \ np.isclose(y.solution.item(),200),(result,x.solution,y.solution)\n  print(method,scale,result,float(x.solution),float(y.solution))\n\
+        PY"
