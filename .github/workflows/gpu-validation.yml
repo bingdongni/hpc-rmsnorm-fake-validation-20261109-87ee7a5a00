@@ -28,17 +28,19 @@ jobs:
         from shutil import copyfile\n# Load the checked-out POT Python sources with\
         \ the extension modules from its released wheel.\n# None of the modified paths\
         \ are native or overwritten by this step.\nwheel = distribution(\"POT\")\n\
-        for f in wheel.files:\n    if str(f).startswith(\"ot/\") and f.suffix == \"\
-        .so\":\n        dest=Path(f)\n        if dest.parent.is_dir():\n         \
-        \   copyfile(wheel.locate_file(f), dest)\nimport ot\nassert Path(ot.__file__).resolve()\
-        \ == Path('ot/__init__.py').resolve()\nprint(\"tested repository source\"\
-        ,ot.lp.barycenter.__module__, \"using native wheel\",wheel.version)\nPY\n\
-        python -m pytest -q test/test_ot.py -k lp_barycenter\npython examples/barycenters/plot_barycenter_output_grid.py\n\
-        python - <<'PY'\nimport numpy as np\nimport ot\nfrom scipy.optimize import\
-        \ minimize_scalar\nrng=np.random.default_rng(716)\nfor n in [5,31,96]:\n \
-        \   hist=rng.random((n,4));hist/=hist.sum(axis=0)\n    sites=np.linspace(-1,2,n)\n\
-        \    M=(sites[:,None]-np.array([-0.8,1.1]))**2\n    w=np.array([.11,.19,.29,.41])\n\
-        \    q=ot.lp.barycenter(hist,M,w)\n    def objective(t):\n        return sum(w[j]*ot.emd2(np.ascontiguousarray(hist[:,j]),np.array([t,1-t]),M)\
+        for f in wheel.files:\n    if f.parts[0].endswith(\".libs\"):\n        dest=Path(f)\n\
+        \        dest.parent.mkdir(exist_ok=True)\n        copyfile(wheel.locate_file(f),dest)\n\
+        \    if str(f).startswith(\"ot/\") and f.suffix == \".so\":\n        dest=Path(f)\n\
+        \        if dest.parent.is_dir():\n            copyfile(wheel.locate_file(f),\
+        \ dest)\nimport ot\nassert Path(ot.__file__).resolve() == Path('ot/__init__.py').resolve()\n\
+        print(\"tested repository source\",ot.lp.barycenter.__module__, \"using native\
+        \ wheel\",wheel.version)\nPY\npython -m pytest -q test/test_ot.py -k lp_barycenter\n\
+        python examples/barycenters/plot_barycenter_output_grid.py\npython - <<'PY'\n\
+        import numpy as np\nimport ot\nfrom scipy.optimize import minimize_scalar\n\
+        rng=np.random.default_rng(716)\nfor n in [5,31,96]:\n    hist=rng.random((n,4));hist/=hist.sum(axis=0)\n\
+        \    sites=np.linspace(-1,2,n)\n    M=(sites[:,None]-np.array([-0.8,1.1]))**2\n\
+        \    w=np.array([.11,.19,.29,.41])\n    q=ot.lp.barycenter(hist,M,w)\n   \
+        \ def objective(t):\n        return sum(w[j]*ot.emd2(np.ascontiguousarray(hist[:,j]),np.array([t,1-t]),M)\
         \ for j in range(4))\n    ref=minimize_scalar(objective,bounds=(0,1),method='bounded',options={'xatol':1e-12})\n\
         \    assert abs(objective(q[0])-ref.fun)<1e-8\n    print('independent nested\
         \ EMD objective',n,'bins',objective(q[0]),'vs',ref.fun)\nPY"
