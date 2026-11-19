@@ -23,8 +23,8 @@ jobs:
         python-version: '3.12'
     - name: Build, exercise the public interface and compare results
       run: "python -m pip install . pytest scipy matplotlib\ncd \"$RUNNER_TEMP\"\n\
-        python -m pytest -q --pyargs pywt.tests\npython - <<'PY'\nimport doctest\n\
-        import numpy as np\nimport pywt\nrunner = doctest.DocTestRunner()\nrunner.run(doctest.DocTestParser().get_doctest(pywt.refinement_matrix.__doc__,\
+        python -m pytest -q --pyargs pywt\npython - <<'PY'\nimport doctest\nimport\
+        \ numpy as np\nimport pywt\nrunner = doctest.DocTestRunner()\nrunner.run(doctest.DocTestParser().get_doctest(pywt.refinement_matrix.__doc__,\
         \ {}, \"refinement_matrix\", None, 0))\nassert runner.summarize().failed ==\
         \ 0\nnames = pywt.wavelist(kind=\"discrete\")\nrng = np.random.default_rng(179)\n\
         for name in names:\n    wavelet = pywt.Wavelet(name)\n    for dual, h in [(False,\
