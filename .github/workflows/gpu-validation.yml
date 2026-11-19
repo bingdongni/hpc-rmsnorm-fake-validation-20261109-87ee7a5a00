@@ -38,7 +38,7 @@ jobs:
         \ minimize_scalar\nrng=np.random.default_rng(716)\nfor n in [5,31,96]:\n \
         \   hist=rng.random((n,4));hist/=hist.sum(axis=0)\n    sites=np.linspace(-1,2,n)\n\
         \    M=(sites[:,None]-np.array([-0.8,1.1]))**2\n    w=np.array([.11,.19,.29,.41])\n\
-        \    q=ot.lp.barycenter(hist,M,w)\n    def objective(t):\n        return sum(w[j]*ot.emd2(hist[:,j],np.array([t,1-t]),M)\
+        \    q=ot.lp.barycenter(hist,M,w)\n    def objective(t):\n        return sum(w[j]*ot.emd2(np.ascontiguousarray(hist[:,j]),np.array([t,1-t]),M)\
         \ for j in range(4))\n    ref=minimize_scalar(objective,bounds=(0,1),method='bounded',options={'xatol':1e-12})\n\
         \    assert abs(objective(q[0])-ref.fun)<1e-8\n    print('independent nested\
         \ EMD objective',n,'bins',objective(q[0]),'vs',ref.fun)\nPY"
