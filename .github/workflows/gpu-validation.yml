@@ -22,16 +22,18 @@ jobs:
       with:
         python-version: '3.12'
     - name: Build, exercise the public interface and compare results
-      run: "git submodule update --init --depth=1 deps/eigen\nexport CFLAGS=\"-O0\
-        \ -g0\" CXXFLAGS=\"-O0 -g0\"\nexport PYTHONPATH=\"$PWD\" MPLBACKEND=Agg OPENBLAS_NUM_THREADS=1\
-        \ OMP_NUM_THREADS=1\npython -m pip install setuptools wheel cython numpy scipy\
-        \ pytest cvxopt matplotlib\npython -m pip install -v -e . --no-build-isolation\n\
-        python -m pytest -q test/test_ot.py -k lp_barycenter\npython examples/barycenters/plot_barycenter_output_grid.py\n\
+      run: "test -d /usr/include/eigen3/Eigen || (sudo apt-get update -qq && sudo\
+        \ apt-get install -y libeigen3-dev)\nexport CPLUS_INCLUDE_PATH=/usr/include/eigen3\n\
+        export CFLAGS=\"-O0 -g0\" CXXFLAGS=\"-O0 -g0\"\nexport PYTHONPATH=\"$PWD\"\
+        \ MPLBACKEND=Agg OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1\npython -m pip install\
+        \ setuptools wheel cython numpy scipy pytest cvxopt matplotlib\npython -m\
+        \ pip install -v -e . --no-build-isolation\npython -m pytest -q test/test_ot.py\
+        \ -k lp_barycenter\npython examples/barycenters/plot_barycenter_output_grid.py\n\
         python - <<'PY'\nimport numpy as np\nimport ot\nfrom scipy.optimize import\
         \ minimize_scalar\nrng=np.random.default_rng(716)\nfor n in [5,31,96]:\n \
         \   hist=rng.random((n,4));hist/=hist.sum(axis=0)\n    sites=np.linspace(-1,2,n)\n\
         \    M=(sites[:,None]-np.array([-0.8,1.1]))**2\n    w=np.array([.11,.19,.29,.41])\n\
-        \    q=ot.lp.barycenter(hist,M,w)\n    def objective(t):\n        return sum(w[j]*ot.emd2(hist[:,j],np.array([t,1-t]),M)\
+        \    q=ot.lp.barycenter(hist,M,w)\n    def objective(t):\n        return sum(w[j]*ot.emd2(np.ascontiguousarray(hist[:,j]),np.array([t,1-t]),M)\
         \ for j in range(4))\n    ref=minimize_scalar(objective,bounds=(0,1),method='bounded',options={'xatol':1e-12})\n\
         \    assert abs(objective(q[0])-ref.fun)<1e-8\n    print('independent nested\
         \ EMD objective',n,'bins',objective(q[0]),'vs',ref.fun)\nPY"
