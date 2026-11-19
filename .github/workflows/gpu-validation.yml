@@ -16,20 +16,21 @@ jobs:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         repository: bingdongni/POT
-        ref: 29cf4fae3be4d392d93a0e4f3a0675a69343e48b
+        ref: 8108ebfd6b5edfdb14d9a2df23e0182ddbcbc04c
         persist-credentials: false
     - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
       with:
         python-version: '3.12'
     - name: Build, exercise the public interface and compare results
-      run: "python -m pip install --only-binary=:all: POT cvxopt matplotlib pytest\n\
-        python - <<'PY'\nfrom pathlib import Path\nfrom importlib.metadata import\
-        \ distribution\nfrom shutil import copyfile\n# Load the checked-out POT Python\
-        \ sources with the extension modules from its released wheel.\n# None of the\
-        \ modified paths are native or overwritten by this step.\nwheel = distribution(\"\
-        POT\")\nfor f in wheel.files:\n    if str(f).startswith(\"ot/\") and f.suffix\
-        \ == \".so\":\n        dest=Path(f)\n        if dest.parent.is_dir():\n  \
-        \          copyfile(wheel.locate_file(f), dest)\nimport ot\nassert Path(ot.__file__).resolve()\
+      run: "export PYTHONPATH=$PWD OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1\npython\
+        \ -m pip install --only-binary=:all: POT cvxopt matplotlib pytest\npython\
+        \ - <<'PY'\nfrom pathlib import Path\nfrom importlib.metadata import distribution\n\
+        from shutil import copyfile\n# Load the checked-out POT Python sources with\
+        \ the extension modules from its released wheel.\n# None of the modified paths\
+        \ are native or overwritten by this step.\nwheel = distribution(\"POT\")\n\
+        for f in wheel.files:\n    if str(f).startswith(\"ot/\") and f.suffix == \"\
+        .so\":\n        dest=Path(f)\n        if dest.parent.is_dir():\n         \
+        \   copyfile(wheel.locate_file(f), dest)\nimport ot\nassert Path(ot.__file__).resolve()\
         \ == Path('ot/__init__.py').resolve()\nprint(\"tested repository source\"\
         ,ot.lp.barycenter.__module__, \"using native wheel\",wheel.version)\nPY\n\
         python -m pytest -q test/test_ot.py -k lp_barycenter\npython examples/barycenters/plot_barycenter_output_grid.py\n\
