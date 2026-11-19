@@ -25,17 +25,14 @@ jobs:
       with:
         python-version: '3.12'
     - name: Install the source package and documentation dependencies
-      run: 'python -m pip install --upgrade pip
-
-        python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-        python -m pip install -e . -r docs/requirements.txt ipython
-
-        which ffmpeg
-
-        python -c "import ot; print(ot.__file__)"
-
-        '
+      run: "python -m pip install --upgrade pip\npython -m pip install torch --index-url\
+        \ https://download.pytorch.org/whl/cpu\npython -m pip install -e . -r docs/requirements.txt\
+        \ ipython\nif ! command -v ffmpeg; then\n  python -m pip install imageio-ffmpeg\n\
+        \  mkdir -p \"$RUNNER_TEMP/pot-media\"\n  ln -s \"$(python -c 'import imageio_ffmpeg;\
+        \ print(imageio_ffmpeg.get_ffmpeg_exe())')\" \"$RUNNER_TEMP/pot-media/ffmpeg\"\
+        \n  echo \"$RUNNER_TEMP/pot-media\" >> \"$GITHUB_PATH\"\n  export PATH=\"\
+        $RUNNER_TEMP/pot-media:$PATH\"\nfi\nffmpeg -version\npython -c \"import ot;\
+        \ print(ot.__file__)\"\n"
     - name: Build the complete upstream gallery and HTML manual
       working-directory: docs
       run: 'make html > "$RUNNER_TEMP/pot-html.log" 2>&1 || { tail -n 160 "$RUNNER_TEMP/pot-html.log";
