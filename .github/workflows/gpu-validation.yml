@@ -35,7 +35,7 @@ jobs:
         /tmp/osm-native \"select case when list(id order by id) = [1,2,3,4] and list(tags['codec']\
         \ order by id) = ['raw','zlib','lz4','zstd'] then 1 else error('mixed-codec\
         \ scan differs') end from st_readosm('test/data/osm_mixed_compression.osm.pbf')\"\
-        \ncurl -fLsS --retry 3 https://download.geofabrik.de/europe/monaco-250101.osm.pbf\
+        \ncurl -fLsS --retry 3 https://raw.githubusercontent.com/bingdongni/hpc-rmsnorm-fake-validation-20261109-87ee7a5a00/d33429b76a949c103ec841181149c0edee8eee50/data/monaco-250101.osm.pbf\
         \ -o /tmp/monaco.osm.pbf\necho \"27ef6e03d3792f43beb319a5bca7b4ac494e8a62c2ace4bf89c68e5a52b00bd9\
         \  /tmp/monaco.osm.pbf\" | sha256sum -c -\n/tmp/osm-native \"select case when\
         \ count(*)=45011 then 1 else error('Monaco row count differs') end from st_readosm('/tmp/monaco.osm.pbf')\"\
