@@ -1,45 +1,44 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: Tantivy dynamic attribute sorting baseline
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
+  sorting:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+      CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - uses: actions/checkout@v4
+      with:
+        repository: quickwit-oss/tantivy
+        ref: 0aa896fe29417107ad0bbab502c1a9fd1077f272
+        persist-credentials: false
+    - name: Verify the reported public search APIs
+      run: "cat > tests/selection_json_sort.rs <<'RUST'\nuse tantivy::collector::{sort_key::SortByErasedType,\
+        \ TopDocs};\nuse tantivy::indexer::NoMergePolicy;\nuse tantivy::query::AllQuery;\n\
+        use tantivy::schema::{Schema, FAST};\nuse tantivy::{Index, Order, TantivyDocument,\
+        \ TantivyError};\n\n#[test]\nfn dynamic_attributes_across_three_segments()\
+        \ -> tantivy::Result<()> {\n    let mut builder = Schema::builder();\n   \
+        \ builder.add_json_field(\"attrs\", FAST);\n    let schema = builder.build();\n\
+        \    let index = Index::create_in_ram(schema.clone());\n    let mut writer\
+        \ = index.writer_with_num_threads(1, 50_000_000)?;\n    writer.set_merge_policy(Box::new(NoMergePolicy));\n\
+        \    for doc in [\n        r#\"{\"attrs\":{\"due\":30,\"prio\":\"b\"}}\"#,\n\
+        \        r#\"{\"attrs\":{\"due\":10,\"prio\":\"a\"}}\"#,\n        r#\"{\"\
+        attrs\":{\"prio\":\"c\"}}\"#,\n    ] {\n        writer.add_document(TantivyDocument::parse_json(&schema,\
+        \ doc).unwrap())?;\n        writer.commit()?;\n    }\n    let reader = index.reader()?;\n\
+        \    let searcher = reader.searcher();\n    assert_eq!(searcher.segment_readers().len(),\
+        \ 3);\n    let strings = TopDocs::with_limit(3).order_by_string_fast_field(\"\
+        attrs.prio\", Order::Asc);\n    let keys: Vec<_> = searcher.search(&AllQuery,\
+        \ &strings)?.into_iter().map(|(k,_)| k.unwrap()).collect();\n    assert_eq!(keys,\
+        \ [\"a\", \"b\", \"c\"]);\n    let numeric = TopDocs::with_limit(3).order_by_fast_field::<i64>(\"\
+        attrs.due\", Order::Asc);\n    let typed_error = searcher.search(&AllQuery,\
+        \ &numeric).unwrap_err();\n    assert!(matches!(typed_error, TantivyError::FieldNotFound(ref\
+        \ f) if f == \"attrs.due\"));\n    let dynamic = TopDocs::with_limit(3).order_by((SortByErasedType::for_field(\"\
+        attrs.due\"), Order::Asc));\n    let missing = searcher.search(&AllQuery,\
+        \ &dynamic).unwrap_err();\n    assert!(missing.to_string().contains(\"Fast\
+        \ field not available\"), \"{missing}\");\n    println!(\"String sort returned\
+        \ {keys:?}; numeric sort returned {typed_error}; dynamic sort returned {missing}\"\
+        );\n    Ok(())\n}\nRUST\ncargo test -p tantivy --test selection_json_sort\
+        \ -- --nocapture"
