@@ -1,0 +1,4 @@
+Monaco extract from https://download.geofabrik.de/europe/monaco-250101.osm.pbf
+Map data (c) OpenStreetMap contributors, available under the Open Database License (ODbL) 1.0.
+https://www.openstreetmap.org/copyright
+https://opendatacommons.org/licenses/odbl/1-0/
