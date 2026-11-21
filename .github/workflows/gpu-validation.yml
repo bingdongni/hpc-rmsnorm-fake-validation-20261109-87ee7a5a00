@@ -1,45 +1,262 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: Native PyVRP constrained relocation benchmark
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
-    env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: PyVRP/PyVRP
+        ref: b9225e43ec51cc1f41fddeb75e7ba22b8440cf07
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Build and measure RelocatePickup and RelocateDelivery
+      run: "cat > pyvrp/cpp/search/RideTimeExperiment.h <<'TASK_FILE'\n// Benchmark\
+        \ instrumentation for the two intra-route shipment operators on lrc206.\n\
+        // IDs are positions in the incumbent, including separate start and end depots.\n\
+        #pragma once\n#include \"Route.h\"\n#include <algorithm>\n#include <functional>\n\
+        #include <map>\n#include <numeric>\n#include <queue>\n#include <stdexcept>\n\
+        #include <vector>\n\nnamespace pyvrp::search::ride_experiment {\nusing I =\
+        \ std::int64_t;\nusing Arc = std::pair<int, I>;\nusing Graph = std::vector<std::vector<Arc>>;\n\
+        using Times = std::vector<I>;\n\nstruct Reference {\n    std::vector<int>\
+        \ signature, locations;\n    std::vector<I> service;\n    Graph fixed;\n \
+        \   Times witness;\n};\ninline int mode = 0;\ninline Times caps;\ninline std::map<Route\
+        \ const *, Reference> references;\ninline I checked = 0, rejected = 0;\n\n\
+        inline void configure(int newMode, Times limits) {\n    mode = newMode;\n\
+        \    caps = std::move(limits);\n    references.clear();\n    checked = rejected\
+        \ = 0;\n}\ninline std::vector<I> statistics() { return {checked, rejected};\
+        \ }\n\ninline Times full(Graph const &fixed, std::vector<int> const &prev,\n\
+        \                  std::function<I(int,int)> const &weight) {\n    int n =\
+        \ static_cast<int>(fixed.size());\n    Times pot(n, 0);\n    for (int pass\
+        \ = 0; pass < n; ++pass) {\n        bool changed = false;\n        auto relax\
+        \ = [&](int u,int v,I w) {\n            if (pot[u]+w < pot[v]) { pot[v]=pot[u]+w;\
+        \ changed=true; }\n        };\n        for (int u = 0; u < n; ++u)\n     \
+        \       for (auto [v,w] : fixed[u]) relax(u,v,w);\n        for (int u = n-1;\
+        \ u >= 0; --u)\n            if (prev[u]>=0) relax(u,prev[u],weight(u,prev[u]));\n\
+        \        if (!changed) return pot;\n    }\n    return {};\n}\n\ninline bool\
+        \ incremental(Reference const &ref, std::vector<int> const &old,\n       \
+        \                 std::vector<int> const &next,\n                        std::function<I(int,int)>\
+        \ const &weight) {\n    Times pot = ref.witness;\n    std::vector<int> active\
+        \ = old;\n    for (size_t i=0; i<active.size(); ++i)\n        if (old[i]!=next[i])\
+        \ active[i]=-1;\n    for (int u=0; u<static_cast<int>(next.size()); ++u) {\n\
+        \        int v=next[u];\n        if (v<0 || active[u]==v) continue;\n    \
+        \    I deficit=pot[v]-pot[u]-weight(u,v);\n        if (deficit>0) {\n    \
+        \        using Entry=std::pair<I,int>;\n            std::priority_queue<Entry,std::vector<Entry>,std::greater<Entry>>\
+        \ queue;\n            Times dist(pot.size(),deficit);\n            dist[v]=0;\n\
+        \            queue.emplace(0,v);\n            while (!queue.empty()) {\n \
+        \               auto [d,k]=queue.top(); queue.pop();\n                if (d!=dist[k])\
+        \ continue;\n                if (k==u) return false;\n                auto\
+        \ visit = [&](int target,I cost) {\n                    I reduced=d+cost+pot[k]-pot[target];\n\
+        \                    if (reduced<dist[target]) {\n                       \
+        \ dist[target]=reduced; queue.emplace(reduced,target);\n                 \
+        \   }\n                };\n                for (auto [target,cost]:ref.fixed[k])\
+        \ visit(target,cost);\n                if (active[k]>=0) visit(active[k],weight(k,active[k]));\n\
+        \            }\n            for (size_t i=0; i<pot.size(); ++i) pot[i]-=deficit-dist[i];\n\
+        \        }\n        active[u]=v;\n    }\n    return true;\n}\n\ninline bool\
+        \ permits(ProblemData const &data, Route const &route,\n                 \
+        \   int moving, int before) {\n    if (!mode) return true;\n    ++checked;\n\
+        \    int end=static_cast<int>(route.size());\n    std::vector<int> signature(end);\n\
+        \    for (int i=0; i<end; ++i) {\n        auto node=route[i];\n        signature[i]=node->isDepot()\
+        \ ? -1 : 2*static_cast<int>(node->idx())+node->isDelivery();\n    }\n    auto\
+        \ &ref=references[&route];\n    std::vector<int> old(end+1,-1);\n    for (int\
+        \ i=1;i<end;++i) old[i]=i-1;\n    auto const &matrix=data.durationMatrix(route.profile());\n\
+        \    auto weight = [&](int u,int v)->I {\n        return -ref.service[v]-matrix(ref.locations[v],ref.locations[u]).get();\n\
+        \    };\n    if (ref.signature!=signature) {\n        ref=Reference{};\n \
+        \       ref.signature=signature;\n        ref.fixed.resize(end+1);\n     \
+        \   std::vector<int> pickup(caps.size(),-1);\n        for (int i=0;i<end;++i)\
+        \ {\n            auto node=route[i];\n            auto add=[&](auto const\
+        \ &s) {\n                ref.locations.push_back(s.location);ref.service.push_back(s.serviceDuration.get());\n\
+        \                ref.fixed[end].emplace_back(i,s.twLate.get());\n        \
+        \        ref.fixed[i].emplace_back(end,-s.twEarly.get());\n            };\n\
+        \            if (node->isDepot()) add(data.depot(node->idx()));\n        \
+        \    else if (node->isPickup()) {\n                pickup.at(node->idx())=i;add(data.shipment(node->idx()).pickup);\n\
+        \            } else {\n                int p=pickup.at(node->idx());\n   \
+        \             if (p<0) throw std::runtime_error(\"Unpaired delivery in benchmark\"\
+        );\n                add(data.shipment(node->idx()).delivery);\n          \
+        \      ref.fixed[p].emplace_back(i,ref.service[p]+caps.at(node->idx()));\n\
+        \            }\n        }\n        if (mode>=2) ref.witness=full(ref.fixed,old,weight);\n\
+        \    }\n    std::vector<int> order(end);\n    std::iota(order.begin(),order.end(),0);\n\
+        \    order.erase(order.begin()+moving);\n    order.insert(order.begin()+before-(moving<before),moving);\n\
+        \    std::vector<int> prev(end+1,-1);\n    for (int i=1;i<end;++i) prev[order[i]]=order[i-1];\n\
+        \    bool feasible;\n    if (mode==1 || ref.witness.empty()) feasible=!full(ref.fixed,prev,weight).empty();\n\
+        \    else feasible=incremental(ref,old,prev,weight);\n    if (mode==3 && feasible!=!full(ref.fixed,prev,weight).empty())\n\
+        \        throw std::runtime_error(\"Native incremental decision disagrees\
+        \ with full rebuild\");\n    rejected+=!feasible;\n    return feasible;\n\
+        }\n}\nTASK_FILE\ncat > /tmp/instrument.py <<'TASK_FILE'\nfrom pathlib import\
+        \ Path\nf=Path('pyvrp/cpp/search')\nfor name,src,dest in [('RelocatePickup','U->pos()','node->pos()'),('RelocateDelivery','delivery->pos()','after->pos()+1')]:\n\
+        \    path=f/(name+'.cpp');s=path.read_text()\n    assert s.count('if (deltaCost\
+        \ < -TOL)')==1\n    s='#include \"RideTimeExperiment.h\"\\n'+s.replace('if\
+        \ (deltaCost < -TOL)',f'if (deltaCost < -TOL && ride_experiment::permits(data,\
+        \ *route, {src}, {dest}))')\n    path.write_text(s)\npath=f/'bindings.cpp';s=path.read_text().replace('\
+        \    pyvrp::registerLogger(\"pyvrp.search\");','''    m.def(\"_ride_bench_configure\"\
+        , &pyvrp::search::ride_experiment::configure);\n    m.def(\"_ride_bench_stats\"\
+        , &pyvrp::search::ride_experiment::statistics);\n    pyvrp::registerLogger(\"\
+        pyvrp.search\");''');path.write_text('#include \"RideTimeExperiment.h\"\\\
+        n'+s)\nTASK_FILE\npython /tmp/instrument.py\npython -m pip install \"pyvrp==0.14.1\"\
+        \ meson ninja docblock pybind11\nmeson setup build-native --buildtype release\
+        \ -Db_lto=false -Dpython.platlibdir=\"$PWD\" -Dpython.purelibdir=\"$PWD\"\n\
+        meson compile -C build-native -j 3\nmeson install -C build-native --skip-subprojects\n\
+        cat > /tmp/native-benchmark.py <<'TASK_FILE'\n\"\"\"Compare the real PyVRP\
+        \ single-route shipment operators on identical starting solutions.\"\"\"\n\
+        import json,statistics,time\nfrom pathlib import Path\nimport pyvrp as p\n\
+        from pyvrp.stop import MaxIterations\nfrom pyvrp import search\nfrom pyvrp.search\
+        \ import _search\nfrom search_benchmark import prepare\nfrom ride_time import\
+        \ RouteBounds\n\ndef dataset():\n    data=p.read('tests/data/lrc206.vrp')\n\
+        \    seeds=[2,7,17]\n    inputs=[]\n    for seed in seeds:\n        _search._ride_bench_configure(0,[])\n\
+        \        sol=p.solve(data,MaxIterations(35),seed=seed,collect_stats=False).best\n\
+        \        groups=prepare(data,sol,seed)\n        routes=[];caps=[0]*data.num_shipments\n\
+        \        for native,(graph,_,_,_,order) in zip(sol.routes(),groups,strict=True):\n\
+        \            sch=native.schedule()\n            for pick,delivery,cap in graph.limits:caps[sch[pick].idx]=cap\n\
+        \            routes.append(p.Route(data,[p.Activity(sch[i].type,sch[i].idx)\
+        \ for i in order[1:-1]],native.vehicle_type()))\n        initial=p.Solution(data,routes);assert\
+        \ initial.is_feasible()\n        inputs.append((seed,initial,caps,groups,sol))\n\
+        \    return data,inputs\n\ndef main():\n    data,inputs=dataset()\n    ce=p.CostEvaluator([10000.0],10000.0,10000.0)\n\
+        \    neighbors=search.compute_neighbours(data)\n    def run(mode,step):\n\
+        \        ends=[];duration=0;checks=rejects=0\n        for seed,solution,caps,graphs,original\
+        \ in inputs:\n            ls=search.LocalSearch(data,p.RandomNumberGenerator(seed+step),neighbors)\n\
+        \            ls.add_operator(search.RelocatePickup(data));ls.add_operator(search.RelocateDelivery(data))\n\
+        \            _search._ride_bench_configure(mode,caps)\n            t=time.perf_counter_ns();out=ls(solution,ce,True);duration+=time.perf_counter_ns()-t\n\
+        \            c,r=_search._ride_bench_stats();checks+=c;rejects+=r\n      \
+        \      assert out.is_feasible()\n            ranges={frozenset(str(a) for\
+        \ a in route.schedule()[1:-1]):(route,graph)\n                    for route,(graph,*_)\
+        \ in zip(original.routes(),graphs,strict=True)}\n            signature=[]\n\
+        \            for route in out.routes():\n                seq=[str(x) for x\
+        \ in route.schedule()[1:-1]];signature.append(seq)\n                if mode:\n\
+        \                    ref,graph=ranges[frozenset(seq)]\n                  \
+        \  index={str(x):i for i,x in enumerate(ref.schedule()[1:-1],1)}\n       \
+        \             order=(0,*(index[x] for x in seq),len(graph.stops)-1)\n    \
+        \                state=graph.full(order);assert state and graph.valid(state)\n\
+        \            ends.append((out.distance(),signature))\n        return duration,(ends,checks,rejects)\n\
+        \    # Audit decisions inside the C++ operator and independently certify each\
+        \ exported route in Python.\n    for step in range(8):\n        assert run(3,step)[1]==run(1,step)[1]\n\
+        \    batch=100;rounds=9;metrics={m:[] for m in range(3)};counts={}\n    for\
+        \ i in range(rounds):\n        for mode in [(i+j)%3 for j in range(3)]:\n\
+        \            elapsed=0;examined=denied=objective=0\n            for j in range(batch):\n\
+        \                ns,(ends,cc,rr)=run(mode,j%8);elapsed+=ns;examined+=cc;denied+=rr\n\
+        \                objective+=sum(v for v,_ in ends)\n            metrics[mode].append(elapsed/1e6);counts[mode]=dict(checked=examined,rejected=denied,sum_distance=objective)\n\
+        \    assert counts[1]==counts[2] and counts[2]['rejected']>0\n    names=['cap_disabled','full','incremental']\n\
+        \    print(json.dumps(dict(instance='lrc206',native_calls_per_round=len(inputs)*batch,rounds=rounds,median_ms={names[k]:round(statistics.median(v),3)\
+        \ for k,v in metrics.items()},counts={names[k]:v for k,v in counts.items()},times_ms=metrics)))\n\
+        if __name__=='__main__':main()\nTASK_FILE\ncat > /tmp/ride_time.py <<'TASK_FILE'\n\
+        \"\"\"Exact service-start feasibility for fixed-order pickup/delivery route\
+        \ edits.\"\"\"\nfrom dataclasses import dataclass\nfrom heapq import heappop,\
+        \ heappush\nfrom itertools import chain, pairwise\n\n\n@dataclass\nclass Schedule:\n\
+        \    order: tuple\n    previous: list  # backward travel constraint indexed\
+        \ by destination stop\n    potential: list\n\n\nclass RouteBounds:\n    def\
+        \ __init__(self, stops, duration, limits):\n        self.stops = stops\n \
+        \       self.duration = duration\n        self.limits = limits\n        origin\
+        \ = len(stops)\n        self.static = [[] for _ in range(origin + 1)]\n  \
+        \      for node, stop in enumerate(stops):\n            self.static[origin].append((node,\
+        \ stop.tw_late))\n            self.static[node].append((origin, -stop.tw_early))\n\
+        \        for pickup, delivery, cap in limits:\n            self.static[pickup].append((delivery,\
+        \ stops[pickup].service_duration + cap))\n\n    def edge(self, first, second):\n\
+        \        return (first, -self.stops[first].service_duration - self.duration[first][second])\n\
+        \n    def full(self, order):\n        # Rebuild all difference constraints.\
+        \ A relaxation on pass |V| implies a negative cycle.\n        n = len(self.static)\n\
+        \        edges = [(u, v, w) for u, bounds in enumerate(self.static) for v,\
+        \ w in bounds]\n        previous = [None] * n\n        for a, b in reversed(list(pairwise(order))):\n\
+        \            previous[b] = self.edge(a, b)\n            edges.append((b, *previous[b]))\n\
+        \        pot = [0] * n\n        for _ in range(n):\n            changed =\
+        \ False\n            for u, v, weight in edges:\n                if pot[u]\
+        \ + weight < pot[v]:\n                    pot[v] = pot[u] + weight\n     \
+        \               changed = True\n            if not changed:\n            \
+        \    return Schedule(order, previous, pot)\n        return None\n\n    def\
+        \ edit(self, old, order):\n        \"\"\"Keep the feasible potential after\
+        \ cuts, then repair only violated new arcs.\"\"\"\n        previous = old.previous.copy()\n\
+        \        potential = old.potential.copy()\n        if order:\n           \
+        \ previous[order[0]] = None\n        added = []\n        for a, b in pairwise(order):\n\
+        \            if previous[b] is None or previous[b][0] != a:\n            \
+        \    previous[b] = None\n                added.append((b, self.edge(a, b)))\n\
+        \        for u, (v, weight) in added:\n            deficit = potential[v]\
+        \ - potential[u] - weight\n            if deficit > 0:\n                #\
+        \ Before this insertion all reduced costs are nonnegative.\n             \
+        \   # A return path shorter than deficit closes a negative cycle.\n      \
+        \          distances = {v: 0}\n                queue = [(0, v)]\n        \
+        \        while queue:\n                    dist, node = heappop(queue)\n \
+        \                   if dist != distances[node]:\n                        continue\n\
+        \                    if node == u:\n                        return None\n\
+        \                    arc = previous[node]\n                    for other,\
+        \ cost in chain(self.static[node], (arc,) if arc else ()):\n             \
+        \           value = dist + cost + potential[node] - potential[other]\n   \
+        \                     if value < distances.get(other, deficit):\n        \
+        \                    distances[other] = value\n                          \
+        \  heappush(queue, (value, other))\n                for node, dist in distances.items():\n\
+        \                    potential[node] -= deficit - dist\n            previous[u]\
+        \ = (v, weight)\n        return Schedule(order, previous, potential)\n\n \
+        \   def valid(self, state):\n        p = state.potential\n        return all(p[v]\
+        \ <= p[u] + w for u, arcs in enumerate(self.static) for v,w in arcs) and all(\n\
+        \            p[a] <= p[b] + self.edge(a,b)[1] for a,b in pairwise(state.order)\n\
+        \        )\nTASK_FILE\ncat > /tmp/search_benchmark.py <<'TASK_FILE'\n\"\"\"\
+        Time a complete constrained intra-route search on a PyVRP PDPTW benchmark.\"\
+        \"\"\nfrom dataclasses import dataclass\nfrom itertools import pairwise\n\
+        import json,random,statistics,sys,time\nfrom pathlib import Path\nimport pyvrp\n\
+        from pyvrp.stop import MaxIterations\nfrom ride_time import RouteBounds\n\n\
+        @dataclass\nclass Stop:\n    tw_early:int\n    tw_late:int\n    service_duration:int\n\
+        \ndef build(data, route):\n    timeline=route.schedule()\n    refs=[]; pickups={};\
+        \ deliveries={}; loads=[]\n    for i,a in enumerate(timeline):\n        if\
+        \ a.is_depot():\n            refs.append(data.depot(a.idx));loads.append(0)\n\
+        \        else:\n            job=data.shipment(a.idx)\n            if a.is_pickup():pickups[a.idx]=i;\
+        \ refs.append(job.pickup)\n            else:deliveries[a.idx]=i; refs.append(job.delivery)\n\
+        \            loads.append(job.amount[0]*(1 if a.is_pickup() else -1))\n  \
+        \  loc=[s.location for s in refs]; vehicle=data.vehicle_type(route.vehicle_type())\n\
+        \    duration=data.duration_matrix(vehicle.profile);distance=data.distance_matrix(vehicle.profile)\n\
+        \    stops=[Stop(s.tw_early,s.tw_late,s.service_duration) for s in refs]\n\
+        \    # These benchmark vehicles have no extra shift/duration restriction beyond\
+        \ the depot window.\n    stops[0].tw_early=max(stops[0].tw_early,vehicle.tw_early)\n\
+        \    stops[-1].tw_late=min(stops[-1].tw_late,vehicle.tw_late)\n    lim=[]\n\
+        \    for job,p in pickups.items():\n        d=deliveries[job]\n        observed=timeline[d].start_time-timeline[p].end_time\n\
+        \        lim.append((p,d,observed+max(3,observed//10)))\n    graph=RouteBounds(stops,[[int(duration[a,b])\
+        \ for b in loc] for a in loc],lim)\n    return graph,[[int(distance[a,b])\
+        \ for b in loc] for a in loc],loads,vehicle.capacity[0]\n\ndef admissible(order,graph,loads,cap):\n\
+        \    positions=[0]*len(order)\n    current=0\n    for k,node in enumerate(order):\n\
+        \        positions[node]=k\n        current+=loads[node]\n        if current<0\
+        \ or current>cap:return False\n    return all(positions[p]<positions[d] for\
+        \ p,d,_ in graph.limits)\n\ndef distance(cost,order):\n    return sum(cost[a][b]\
+        \ for a,b in pairwise(order))\n\ndef neighbors(order):\n    # Enumerate all\
+        \ single-stop relocations between the two fixed depot visits.\n    for i in\
+        \ range(1,len(order)-1):\n        node=order[i];rest=order[:i]+order[i+1:]\n\
+        \        for j in range(1,len(rest)):\n            if j==i or j==i-1:continue\
+        \  # adjacent swaps occur twice\n            yield rest[:j]+(node,)+rest[j:]\n\
+        \ndef prepare(data,sol,seed):\n    starts=[]\n    for ri,route in enumerate(sol.routes()):\n\
+        \        graph,cost,loads,cap=build(data,route)\n        order=tuple(range(len(graph.stops)))\n\
+        \        state=graph.full(order)\n        assert state and graph.valid(state)\n\
+        \        # Perturb a feasible incumbent to give both implementations real\
+        \ improving moves.\n        rng=random.Random(1000*seed+ri)\n        for _\
+        \ in range(4):\n            candidates=list(neighbors(order));rng.shuffle(candidates)\n\
+        \            for cand in candidates:\n                if admissible(cand,graph,loads,cap):\n\
+        \                    trial=graph.edit(state,cand)\n                    if\
+        \ trial:\n                        assert graph.valid(trial)\n            \
+        \            state=trial;order=cand;break\n        starts.append((graph,cost,loads,cap,order))\n\
+        \    return starts\n\ndef search(starts,mode,profile=False):\n    candidates=checks=accepted=rejects=checker_ns=total_cost=0\n\
+        \    final=[]\n    for graph,cost,loads,cap,order in starts:\n        current=graph.full(order)\n\
+        \        best_cost=distance(cost,order)\n        while True:\n           \
+        \ winner=None\n            start_cost=best_cost\n            for choice in\
+        \ neighbors(order):\n                candidates+=1\n                score=distance(cost,choice)\n\
+        \                if score>=best_cost or not admissible(choice,graph,loads,cap):continue\n\
+        \                checks+=1\n                if profile:t=time.perf_counter_ns()\n\
+        \                trial=graph.edit(current,choice) if mode=='incremental' else\
+        \ graph.full(choice)\n                if profile:checker_ns+=time.perf_counter_ns()-t\n\
+        \                if trial is None:rejects+=1;continue\n                winner=trial;best_cost=score\n\
+        \            if winner is None:break\n            assert best_cost<start_cost\n\
+        \            current=winner;order=current.order;accepted+=1\n        assert\
+        \ graph.valid(current)\n        final.append(order);total_cost+=best_cost\n\
+        \    return (candidates,checks,rejects,accepted,total_cost,final),checker_ns\n\
+        \ndef main():\n    fn=Path(__file__).resolve().parent.parent/'frontier-selection-20261121/pyvrp/tests/data/lrc206.vrp'\n\
+        \    data=pyvrp.read(fn)\n    starts=[];native=[];start_cost=0\n    for seed\
+        \ in [2,7,17]:\n        t=time.perf_counter()\n        result=pyvrp.solve(data,MaxIterations(35),seed=seed,collect_stats=False)\n\
+        \        native.append((seed,round(time.perf_counter()-t,4),result.cost()))\n\
+        \        assert result.best.is_feasible()\n        starts+=prepare(data,result.best,seed)\n\
+        \    start_cost=sum(distance(cost,order) for _,cost,_,_,order in starts)\n\
+        \    times={m:[] for m in ('full','incremental')};profile={}\n    ref,_=search(starts,'full')\n\
+        \    for m in times:\n        stats,ns=search(starts,m,True); assert stats==ref\n\
+        \        profile[m]=round(ns/ref[1]/1000,2)\n    for i in range(7):\n    \
+        \    for mode in list(times)[::1 if i%2==0 else -1]:\n            t=time.perf_counter();out,_=search(starts,mode);times[mode].append(time.perf_counter()-t)\n\
+        \            assert out==ref\n    print(json.dumps(dict(instance=fn.name,seeds=native,starts=len(starts),initial_distance=start_cost,candidates=ref[0],checks=ref[1],rejected=ref[2],accepted_moves=ref[3],final_distance=ref[4],microseconds_per_check=profile,median_seconds={m:round(statistics.median(t),4)\
+        \ for m,t in times.items()},repetitions_s=times),indent=2))\nif __name__=='__main__':\
+        \ main()\nTASK_FILE\nPYTHONPATH=\"$PWD\" python /tmp/native-benchmark.py"
