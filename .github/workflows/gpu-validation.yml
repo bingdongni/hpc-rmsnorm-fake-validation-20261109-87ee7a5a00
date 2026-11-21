@@ -39,4 +39,38 @@ jobs:
         \ -o /tmp/monaco.osm.pbf\necho \"27ef6e03d3792f43beb319a5bca7b4ac494e8a62c2ace4bf89c68e5a52b00bd9\
         \  /tmp/monaco.osm.pbf\" | sha256sum -c -\n/tmp/osm-native \"select case when\
         \ count(*)=45011 then 1 else error('Monaco row count differs') end from st_readosm('/tmp/monaco.osm.pbf')\"\
-        \n\n"
+        \n\npython3 -m venv /tmp/osm-check\n/tmp/osm-check/bin/pip -q install grpcio-tools\
+        \ zstandard lz4\ncurl -fsSL https://raw.githubusercontent.com/openstreetmap/OSM-binary/master/osmpbf/fileformat.proto\
+        \ -o /tmp/fileformat.proto\n/tmp/osm-check/bin/python -m grpc_tools.protoc\
+        \ --proto_path=/tmp --python_out=/tmp /tmp/fileformat.proto\nPYTHONPATH=/tmp\
+        \ /tmp/osm-check/bin/python - <<'PY'\nimport hashlib, struct, zlib\nfrom pathlib\
+        \ import Path\nimport lz4.block, zstandard as zstd\nfrom fileformat_pb2 import\
+        \ Blob, BlobHeader\ndef cells(path):\n    with path.open(\"rb\") as f:\n \
+        \       while True:\n            n = f.read(4)\n            if not n:\n  \
+        \              break\n            header = BlobHeader.FromString(f.read(struct.unpack(\"\
+        >I\", n)[0]))\n            blob = Blob.FromString(f.read(header.datasize))\n\
+        \            yield header, blob\n\n\ndef decode(b):\n    fmt = b.WhichOneof(\"\
+        data\")\n    if fmt == \"raw\":\n        return b.raw\n    if fmt == \"zlib_data\"\
+        :\n        out = zlib.decompress(b.zlib_data)\n    elif fmt == \"lz4_data\"\
+        :\n        out = lz4.block.decompress(b.lz4_data, uncompressed_size=b.raw_size)\n\
+        \    elif fmt == \"zstd_data\":\n        out = zstd.ZstdDecompressor().decompress(\n\
+        \            b.zstd_data, max_output_size=b.raw_size\n        )\n    else:\n\
+        \        raise ValueError(fmt)\n    assert len(out) == b.raw_size\n    return\
+        \ out\n\n\ndef rewrite(source, dest, codec):\n    chunks = []\n    with dest.open(\"\
+        wb\") as out:\n        for hdr, b in cells(source):\n            raw = decode(b)\n\
+        \            n = Blob()\n            if codec == \"raw\":\n              \
+        \  n.raw = raw\n            else:\n                n.raw_size = len(raw)\n\
+        \                if codec == \"zlib\":\n                    n.zlib_data =\
+        \ zlib.compress(raw)\n                elif codec == \"lz4\":\n           \
+        \         n.lz4_data = lz4.block.compress(raw, store_size=False)\n       \
+        \         elif codec == \"zstd\":\n                    n.zstd_data = zstd.ZstdCompressor().compress(raw)\n\
+        \                else:\n                    raise ValueError(codec)\n    \
+        \        body = n.SerializeToString()\n            hdr.datasize = len(body)\n\
+        \            header = hdr.SerializeToString()\n            out.write(struct.pack(\"\
+        >I\", len(header)))\n            out.write(header)\n            out.write(body)\n\
+        \            chunks.append((hdr.type, hashlib.sha256(raw).hexdigest()))\n\
+        \    return chunks\n\n\n\nfor codec in ('raw','lz4','zstd'):\n    rewrite(Path('/tmp/monaco.osm.pbf'),Path('/tmp/'+codec+'.osm.pbf'),codec)\n\
+        PY\nfor codec in raw lz4 zstd; do\n  /tmp/osm-native \"select case when count(*)\
+        \ = 0 then 1 else error('Monaco records differ') end from ((from st_readosm('/tmp/monaco.osm.pbf')\
+        \ except all from st_readosm('/tmp/$codec.osm.pbf')) union all (from st_readosm('/tmp/$codec.osm.pbf')\
+        \ except all from st_readosm('/tmp/monaco.osm.pbf')))\"\ndone\n"
