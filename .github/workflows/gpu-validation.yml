@@ -1,45 +1,62 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: mcap native feature validation
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
-    env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: foxglove/mcap
+        ref: d330d56fe7725bd08b8e93b47480fd04f04d0553
+        persist-credentials: false
+    - name: Build and test normal feature entry points
+      run: "echo ZGlmZiAtLWdpdCBhL3J1c3QvY2xpL3NyYy9ieXRlX3NvdXJjZS5ycyBiL3J1c3QvY2xpL3NyYy9ieXRlX3NvdXJjZS5ycwppbmRleCBhNWM3NDllLi5jNzJmMTY2IDEwMDY0NAotLS0gYS9ydXN0L2NsaS9zcmMvYnl0ZV9zb3VyY2UucnMKKysrIGIvcnVzdC9jbGkvc3JjL2J5dGVfc291cmNlLnJzCkBAIC0yMTEsOCArMjExLDcgQEAgaW1wbCBSZW1vdGVSYW5nZVNvdXJjZSB7CiAgICAgICAgIH0KICAgICB9CiAKLSAgICAvLy8gU2hyaW5rcyB0aGUgd2luZG93IHNvIHRlc3RzIGNhbiBleGVyY2lzZSByZWZpbGxzIG9uIHNtYWxsIGZpeHR1cmVzLgotICAgICNbY2ZnKHRlc3QpXQorICAgIC8vLyBTZXQgdGhlIHJlYWQtYWhlYWQgd2luZG93OyB1c2UgemVybyBmb3Igc3BhcnNlIHJhbmRvbSByZWFkcy4KICAgICBwdWIoY3JhdGUpIGZuIHNldF9yZWFkX2FoZWFkX2J5dGVzKCZtdXQgc2VsZiwgYnl0ZXM6IHVzaXplKSB7CiAgICAgICAgIHNlbGYucmVhZF9haGVhZF9ieXRlcyA9IGJ5dGVzOwogICAgIH0KZGlmZiAtLWdpdCBhL3J1c3QvY2xpL3NyYy9yZXdyaXRlL3NpbmdsZS5ycyBiL3J1c3QvY2xpL3NyYy9yZXdyaXRlL3NpbmdsZS5ycwppbmRleCBmNjhhYTM2Li43MjZjYTA1IDEwMDY0NAotLS0gYS9ydXN0L2NsaS9zcmMvcmV3cml0ZS9zaW5nbGUucnMKKysrIGIvcnVzdC9jbGkvc3JjL3Jld3JpdGUvc2luZ2xlLnJzCkBAIC0yMCwxNiArMjAsOTkgQEAgcHViKGNyYXRlKSBmbiBydW4oYXJnczogUmV3cml0ZU9wdGlvbnMsIHNvdXJjZV9vcHRpb25zOiBTb3VyY2VPcHRpb25zKSAtPiBSZXN1bHQKICAgICBpZiBsZXQgKFNvbWUoaW5wdXQpLCBTb21lKG91dHB1dCkpID0gKGFyZ3MuZmlsZS5hc19kZXJlZigpLCBvcHRzLm91dHB1dC5hc19kZXJlZigpKSB7CiAgICAgICAgIHNvdXJjZTo6ZW5zdXJlX2Rpc3RpbmN0X2xvY2FsX2lucHV0X291dHB1dChpbnB1dCwgb3V0cHV0KT87CiAgICAgfQotICAgIC8vIEEgcmV3cml0ZSByZWFkcyB0aGUgd2hvbGUgaW5wdXQgdGhyb3VnaCByYW5kb20gYWNjZXNzLCBzbyBhIHJlbW90ZSBVUkwgaXMgZG93bmxvYWRlZCBmaXJzdAotICAgIC8vIHVuZGVyIHRoZSBzY2FuIG9wdC1pbiwgY2hlY2tlZCBmcm9tIHRoZSBwYXRoIGJlZm9yZSBhbnkgcmVxdWVzdCBnb2VzIG91dC4gU3RkaW4gaXMgc3Bvb2xlZAotICAgIC8vIHRvIGEgZmlsZSwgc2luY2UgYSByZXdyaXRlIG1heSBzZWVrIGJhY2sgdG8gdGhlIHN1bW1hcnkuCisgICAgaWYgbGV0IFNvbWUocGF0aCkgPSBhcmdzLmZpbGUuYXNfZGVyZWYoKS5maWx0ZXIofHB8IHNvdXJjZTo6aXNfcmVtb3RlX3VybChwKSkgeworICAgICAgICBpZiBsZXQgU29tZSgobXV0IGlucHV0LCBzdW1tYXJ5KSkgPSBvcGVuX3JlbW90ZV9maWx0ZXIocGF0aCwgJm9wdHMsIHNvdXJjZV9vcHRpb25zKT8geworICAgICAgICAgICAgbGV0IChzaW5rLCBkaXNhYmxlX3NlZWtpbmcpID0gY29tbW9uOjpvcGVuX291dHB1dChvcHRzLm91dHB1dC5hc19kZXJlZigpKT87CisgICAgICAgICAgICByZXR1cm4gZmlsdGVyX3RvX3dyaXRlcigmbXV0IGlucHV0LCBzaW5rLCAmb3B0cywgZGlzYWJsZV9zZWVraW5nLCBTb21lKCZzdW1tYXJ5KSk7CisgICAgICAgIH0KKyAgICB9CiAgICAgbGV0IG11dCBpbnB1dCA9IG1hdGNoIGFyZ3MuZmlsZS5hc19kZXJlZigpIHsKICAgICAgICAgU29tZShwYXRoKSA9PiBieXRlX3NvdXJjZTo6b3Blbl9tYXRlcmlhbGl6ZWRfYnl0ZV9zb3VyY2UocGF0aCwgc291cmNlX29wdGlvbnMpPywKICAgICAgICAgTm9uZSA9PiBieXRlX3NvdXJjZTo6b3Blbl9zdGRpbl9ieXRlX3NvdXJjZSgpPywKICAgICB9OwotCiAgICAgbGV0IChzaW5rLCBkaXNhYmxlX3NlZWtpbmcpID0gY29tbW9uOjpvcGVuX291dHB1dChvcHRzLm91dHB1dC5hc19kZXJlZigpKT87Ci0gICAgZmlsdGVyX3RvX3dyaXRlcihpbnB1dC5hc19tdXQoKSwgc2luaywgJm9wdHMsIGRpc2FibGVfc2Vla2luZykKKyAgICBmaWx0ZXJfdG9fd3JpdGVyKGlucHV0LmFzX211dCgpLCBzaW5rLCAmb3B0cywgZGlzYWJsZV9zZWVraW5nLCBOb25lKQorfQorCitmbiBvcGVuX3JlbW90ZV9maWx0ZXIoCisgICAgcGF0aDogJnN0ZDo6cGF0aDo6UGF0aCwKKyAgICBvcHRzOiAmUmVzb2x2ZWRPcHRpb25zLAorICAgIG9wdGlvbnM6IFNvdXJjZU9wdGlvbnMsCispIC0+IFJlc3VsdDxPcHRpb248KGJ5dGVfc291cmNlOjpSZW1vdGVSYW5nZVNvdXJjZSwgbWNhcDo6U3VtbWFyeSk+PiB7CisgICAgLy8gUHJlc2VydmUgdGhlIHdob2xlLWZpbGUgb3B0LWluIGJlZm9yZSBjb250YWN0aW5nIHRoZSBzZXJ2ZXIgZm9yIGFuIHVucmVzdHJpY3RlZCByZXdyaXRlLgorICAgIGlmIG9wdHMuc3RhcnQgPT0gMAorICAgICAgICAmJiBvcHRzLmVuZCA9PSB1NjQ6Ok1BWAorICAgICAgICAmJiBvcHRzLmluY2x1ZGVfdG9waWNzLmlzX2VtcHR5KCkKKyAgICAgICAgJiYgb3B0cy5leGNsdWRlX3RvcGljcy5pc19lbXB0eSgpCisgICAgICAgIHx8ICFvcHRzLmxhc3RfcGVyX2NoYW5uZWxfdG9waWNzLmlzX2VtcHR5KCkKKyAgICB7CisgICAgICAgIHJldHVybiBPayhOb25lKTsKKyAgICB9CisgICAgbGV0IFNvbWUocmVtb3RlKSA9IHNvdXJjZTo6dHJ5X29wZW5fcmVtb3RlX21jYXAocGF0aCwgb3B0aW9ucyk/IGVsc2UgeworICAgICAgICByZXR1cm4gT2soTm9uZSk7CisgICAgfTsKKyAgICBpZiAhcmVtb3RlLm9taXR0ZWRfY2hhbm5lbHMoKS5pc19lbXB0eSgpIHsKKyAgICAgICAgcmV0dXJuIE9rKE5vbmUpOworICAgIH0KKyAgICBsZXQgKHJlYWRlciwgc3VtbWFyeSkgPSByZW1vdGUuaW50b19wYXJ0cygpOworICAgIGxldCBTb21lKGJ5dGVzKSA9IHJlbW90ZV9maWx0ZXJfYnl0ZXMoJnN1bW1hcnksIG9wdHMpIGVsc2UgeworICAgICAgICByZXR1cm4gT2soTm9uZSk7CisgICAgfTsKKyAgICAvLyBJZiB0aGUgcXVlcnkgdG91Y2hlcyBuZWFybHkgdGhlIHdob2xlIG9iamVjdCwga2VlcCB0aGUgZXhpc3Rpbmcgc2VxdWVudGlhbCBkb3dubG9hZC4KKyAgICBpZiBieXRlcyA+PSByZWFkZXIuc2l6ZSgpLnNhdHVyYXRpbmdfc3ViKHJlYWRlci5zaXplKCkgLyAxMCkgeworICAgICAgICByZXR1cm4gT2soTm9uZSk7CisgICAgfQorICAgIHNvdXJjZTo6cmVxdWlyZV9yZW1vdGVfaW5kZXhlZF9yZWFkX2J1ZGdldChieXRlcywgb3B0aW9ucywgImluZGV4ZWQgcmVtb3RlIGZpbHRlciIpPzsKKyAgICBsZXQgbXV0IGlucHV0ID0gYnl0ZV9zb3VyY2U6OlJlbW90ZVJhbmdlU291cmNlOjpuZXcocmVhZGVyKTsKKyAgICBpbnB1dC5zZXRfcmVhZF9haGVhZF9ieXRlcygwKTsKKyAgICBpZiAhY29tbW9uOjpzdW1tYXJ5X2luZGV4ZXNfYWxsX21lc3NhZ2VzKCZtdXQgaW5wdXQsICZzdW1tYXJ5KT8geworICAgICAgICByZXR1cm4gT2soTm9uZSk7CisgICAgfQorICAgIE9rKFNvbWUoKGlucHV0LCBzdW1tYXJ5KSkpCit9CisKKy8vIENvc3QgdGhlIGluZGV4IGNvbXBsZXRlbmVzcyBjaGVjayBhcyB3ZWxsIGFzIHRoZSByZWNvcmRzIHRoZSBpbmRleGVkIHdyaXRlciB3aWxsIGZldGNoLgorLy8gTWlzc2luZyBhdXhpbGlhcnkgaW5kZXhlcyB3b3VsZCBtYWtlIHRoZSB3cml0ZXIgc2NhbiB0b3AtbGV2ZWwgcmVjb3Jkcy4KK2ZuIHJlbW90ZV9maWx0ZXJfYnl0ZXMoc3VtbWFyeTogJm1jYXA6OlN1bW1hcnksIG9wdHM6ICZSZXNvbHZlZE9wdGlvbnMpIC0+IE9wdGlvbjx1NjQ+IHsKKyAgICBsZXQgc3RhdHMgPSBzdW1tYXJ5LnN0YXRzLmFzX3JlZigpPzsKKyAgICBpZiBzdW1tYXJ5LmNodW5rX2luZGV4ZXMuaXNfZW1wdHkoKQorICAgICAgICB8fCAhY29tbW9uOjpzdW1tYXJ5X3N1cHBvcnRzX2luZGV4ZWRfcmVhZChzdW1tYXJ5KQorICAgICAgICB8fCAob3B0cy5pbmNsdWRlX21ldGFkYXRhCisgICAgICAgICAgICAmJiBzdGF0cy5tZXRhZGF0YV9jb3VudCBhcyB1c2l6ZSAhPSBzdW1tYXJ5Lm1ldGFkYXRhX2luZGV4ZXMubGVuKCkpCisgICAgICAgIHx8IChvcHRzLmluY2x1ZGVfYXR0YWNobWVudHMKKyAgICAgICAgICAgICYmIHN0YXRzLmF0dGFjaG1lbnRfY291bnQgYXMgdXNpemUgIT0gc3VtbWFyeS5hdHRhY2htZW50X2luZGV4ZXMubGVuKCkpCisgICAgeworICAgICAgICByZXR1cm4gTm9uZTsKKyAgICB9CisgICAgbGV0IG11dCBieXRlcyA9IDB1NjQ7CisgICAgZm9yIGNodW5rIGluICZzdW1tYXJ5LmNodW5rX2luZGV4ZXMgeworICAgICAgICBpZiBjaHVuay5tZXNzYWdlX2luZGV4X29mZnNldHMuaXNfZW1wdHkoKSB7CisgICAgICAgICAgICByZXR1cm4gTm9uZTsKKyAgICAgICAgfQorICAgICAgICBieXRlcyA9IGJ5dGVzLmNoZWNrZWRfYWRkKGNodW5rLm1lc3NhZ2VfaW5kZXhfbGVuZ3RoKT87CisgICAgICAgIGlmIGNodW5rLm1lc3NhZ2Vfc3RhcnRfdGltZSA8IG9wdHMuZW5kCisgICAgICAgICAgICAmJiBjaHVuay5tZXNzYWdlX2VuZF90aW1lID49IG9wdHMuc3RhcnQKKyAgICAgICAgICAgICYmIGNodW5rLm1lc3NhZ2VfaW5kZXhfb2Zmc2V0cy5rZXlzKCkuYW55KHxpZHwgeworICAgICAgICAgICAgICAgIHN1bW1hcnkKKyAgICAgICAgICAgICAgICAgICAgLmNoYW5uZWxzCisgICAgICAgICAgICAgICAgICAgIC5nZXQoaWQpCisgICAgICAgICAgICAgICAgICAgIC5pc19zb21lX2FuZCh8Y3wgaW5jbHVkZV90b3BpYygmYy50b3BpYywgb3B0cykpCisgICAgICAgICAgICB9KQorICAgICAgICB7CisgICAgICAgICAgICBieXRlcyA9IGJ5dGVzLmNoZWNrZWRfYWRkKGNodW5rLmNodW5rX2xlbmd0aCk/OworICAgICAgICB9CisgICAgfQorICAgIGlmIG9wdHMuaW5jbHVkZV9tZXRhZGF0YSB7CisgICAgICAgIGZvciBpbmRleCBpbiAmc3VtbWFyeS5tZXRhZGF0YV9pbmRleGVzIHsKKyAgICAgICAgICAgIGJ5dGVzID0gYnl0ZXMuY2hlY2tlZF9hZGQoaW5kZXgubGVuZ3RoKT87CisgICAgICAgIH0KKyAgICB9CisgICAgaWYgb3B0cy5pbmNsdWRlX2F0dGFjaG1lbnRzIHsKKyAgICAgICAgZm9yIGluZGV4IGluICZzdW1tYXJ5LmF0dGFjaG1lbnRfaW5kZXhlcyB7CisgICAgICAgICAgICBieXRlcyA9IGJ5dGVzLmNoZWNrZWRfYWRkKGluZGV4Lmxlbmd0aCk/OworICAgICAgICB9CisgICAgfQorICAgIFNvbWUoYnl0ZXMpCiB9CiAKIGZuIGZpbHRlcl90b193cml0ZXI8VzogV3JpdGUgKyBTZWVrPigKQEAgLTM3LDYgKzEyMCw3IEBAIGZuIGZpbHRlcl90b193cml0ZXI8VzogV3JpdGUgKyBTZWVrPigKICAgICBzaW5rOiBXLAogICAgIG9wdHM6ICZSZXNvbHZlZE9wdGlvbnMsCiAgICAgZGlzYWJsZV9zZWVraW5nOiBib29sLAorICAgIGluZGV4ZWQ6IE9wdGlvbjwmbWNhcDo6U3VtbWFyeT4sCiApIC0+IFJlc3VsdDwoKT4gewogICAgIGxldCBwcm9maWxlID0gY29tbW9uOjpyZWFkX2hlYWRlcihpbnB1dCk/CiAgICAgICAgIC5tYXAofGhlYWRlcnwgaGVhZGVyLnByb2ZpbGUpCkBAIC01Miw3ICsxMzYsMTEgQEAgZm4gZmlsdGVyX3RvX3dyaXRlcjxXOiBXcml0ZSArIFNlZWs+KAogICAgICAgICB9LAogICAgICAgICBkaXNhYmxlX3NlZWtpbmcsCiAgICAgKT87Ci0gICAgZmlsdGVyX3dpdGhfd3JpdGVyKGlucHV0LCAmbXV0IHdyaXRlciwgb3B0cyk/OworICAgIGlmIGxldCBTb21lKHN1bW1hcnkpID0gaW5kZXhlZCB7CisgICAgICAgIGZpbHRlcl9pbmRleGVkKGlucHV0LCBzdW1tYXJ5LCAmbXV0IHdyaXRlciwgb3B0cyk/OworICAgIH0gZWxzZSB7CisgICAgICAgIGZpbHRlcl93aXRoX3dyaXRlcihpbnB1dCwgJm11dCB3cml0ZXIsIG9wdHMpPzsKKyAgICB9CiAgICAgd3JpdGVyLmZpbmlzaCgpLmNvbnRleHQoImZhaWxlZCB0byBmaW5pc2ggbWNhcCB3cml0ZXIiKT87CiAgICAgT2soKCkpCiB9CkBAIC00OTMsNyArNTgxLDcgQEAgbW9kIHRlc3RzIHsKICAgICBmbiBmaWx0ZXJfYnl0ZXMoaW5wdXQ6ICZbdThdLCBvcHRzOiAmUmVzb2x2ZWRPcHRpb25zKSAtPiBSZXN1bHQ8VmVjPHU4Pj4gewogICAgICAgICBsZXQgbXV0IHNvdXJjZSA9IE1lbW9yeVNvdXJjZTo6bmV3KGlucHV0LnRvX3ZlYygpKTsKICAgICAgICAgbGV0IG11dCBvdXRwdXQgPSBDdXJzb3I6Om5ldyhWZWM6Om5ldygpKTsKLSAgICAgICAgZmlsdGVyX3RvX3dyaXRlcigmbXV0IHNvdXJjZSwgJm11dCBvdXRwdXQsIG9wdHMsIGZhbHNlKT87CisgICAgICAgIGZpbHRlcl90b193cml0ZXIoJm11dCBzb3VyY2UsICZtdXQgb3V0cHV0LCBvcHRzLCBmYWxzZSwgTm9uZSk/OwogICAgICAgICBPayhvdXRwdXQuaW50b19pbm5lcigpKQogICAgIH0KIApAQCAtNjU3LDYgKzc0NSw3IEBAIG1vZCB0ZXN0cyB7CiAgICAgICAgICAgICAmbXV0IEN1cnNvcjo6bmV3KFZlYzo6bmV3KCkpLAogICAgICAgICAgICAgJmluY2x1ZGVfYWxsX29wdGlvbnMoKSwKICAgICAgICAgICAgIGZhbHNlLAorICAgICAgICAgICAgTm9uZSwKICAgICAgICAgKQogICAgICAgICAuZXhwZWN0X2VycigiYSBjb3JydXB0IGNodW5rIG11c3QgZmFpbCB0aGUgcmV3cml0ZSIpOwogICAgICAgICBhc3NlcnQhKApAQCAtNzE4LDYgKzgwNywyOCBAQCBtb2QgdGVzdHMgewogICAgICAgICAgICAgLmNvbGxlY3QoKQogICAgIH0KIAorICAgICNbdGVzdF0KKyAgICBmbiByZW1vdGVfZmlsdGVyX2Nvc3RzX29ubHlfc2VsZWN0ZWRfY2h1bmtzX2FuZF9yZXF1aXJlZF9pbmRleGVzKCkgeworICAgICAgICBsZXQgZGF0YSA9IHdyaXRlX2ZpbHRlcl90ZXN0X2lucHV0KHRydWUsIGZhbHNlKTsKKyAgICAgICAgbGV0IHN1bW1hcnkgPSBtY2FwOjpTdW1tYXJ5OjpyZWFkKCZkYXRhKS51bndyYXAoKS51bndyYXAoKTsKKyAgICAgICAgbGV0IG5hcnJvdyA9IHRpbWVfd2luZG93ZWRfb3B0aW9ucygxMCwgMTEpOworICAgICAgICBsZXQgYWxsID0gc3VwZXI6OnJlbW90ZV9maWx0ZXJfYnl0ZXMoJnN1bW1hcnksICZpbmNsdWRlX2FsbF9vcHRpb25zKCkpLnVud3JhcCgpOworICAgICAgICBsZXQgc2VsZWN0ZWQgPSBzdXBlcjo6cmVtb3RlX2ZpbHRlcl9ieXRlcygmc3VtbWFyeSwgJm5hcnJvdykudW53cmFwKCk7CisgICAgICAgIGFzc2VydCEoc2VsZWN0ZWQgPCBhbGwpOworICAgICAgICBhc3NlcnQhKAorICAgICAgICAgICAgc2VsZWN0ZWQKKyAgICAgICAgICAgICAgICA+PSBzdW1tYXJ5CisgICAgICAgICAgICAgICAgICAgIC5jaHVua19pbmRleGVzCisgICAgICAgICAgICAgICAgICAgIC5pdGVyKCkKKyAgICAgICAgICAgICAgICAgICAgLm1hcCh8Y3wgYy5tZXNzYWdlX2luZGV4X2xlbmd0aCkKKyAgICAgICAgICAgICAgICAgICAgLnN1bTo6PHU2ND4oKQorICAgICAgICApOworCisgICAgICAgIGxldCBtdXQgaW5jb21wbGV0ZSA9IHN1bW1hcnk7CisgICAgICAgIGluY29tcGxldGUuY2h1bmtfaW5kZXhlc1swXS5tZXNzYWdlX2luZGV4X29mZnNldHMuY2xlYXIoKTsKKyAgICAgICAgYXNzZXJ0X2VxIShzdXBlcjo6cmVtb3RlX2ZpbHRlcl9ieXRlcygmaW5jb21wbGV0ZSwgJm5hcnJvdyksIE5vbmUpOworICAgIH0KKwogICAgIGZuIGluY2x1ZGVfYWxsX29wdGlvbnMoKSAtPiBSZXNvbHZlZE9wdGlvbnMgewogICAgICAgICBSZXNvbHZlZE9wdGlvbnMgewogICAgICAgICAgICAgb3V0cHV0OiBOb25lLApkaWZmIC0tZ2l0IGEvcnVzdC9jbGkvc3JjL3NvdXJjZS5ycyBiL3J1c3QvY2xpL3NyYy9zb3VyY2UucnMKaW5kZXggODU5ZDRiZC4uNzZhYzNmYSAxMDA2NDQKLS0tIGEvcnVzdC9jbGkvc3JjL3NvdXJjZS5ycworKysgYi9ydXN0L2NsaS9zcmMvc291cmNlLnJzCkBAIC0xNDQsNiArMTQ0LDEwIEBAIHB1YiBzdHJ1Y3QgUmVtb3RlTWNhcCB7CiB9CiAKIGltcGwgUmVtb3RlTWNhcCB7CisgICAgcHViKGNyYXRlKSBmbiBpbnRvX3BhcnRzKHNlbGYpIC0+IChSZW1vdGVSYW5nZVJlYWRlciwgbWNhcDo6U3VtbWFyeSkgeworICAgICAgICAoc2VsZi5yZWFkZXIsIHNlbGYuc3VtbWFyeSkKKyAgICB9CisKICAgICBwdWIgZm4gc3VtbWFyeSgmc2VsZikgLT4gJm1jYXA6OlN1bW1hcnkgewogICAgICAgICAmc2VsZi5zdW1tYXJ5CiAgICAgfQpkaWZmIC0tZ2l0IGEvd2Vic2l0ZS9kb2NzL2d1aWRlcy9jbGkubWQgYi93ZWJzaXRlL2RvY3MvZ3VpZGVzL2NsaS5tZAppbmRleCAxYmFmZGQwLi43NDJmOWJkIDEwMDY0NAotLS0gYS93ZWJzaXRlL2RvY3MvZ3VpZGVzL2NsaS5tZAorKysgYi93ZWJzaXRlL2RvY3MvZ3VpZGVzL2NsaS5tZApAQCAtMjkzLDcgKzI5Myw5IEBAIEluZGV4ZWQgcmVhZHMgdXNlIHRoZSBzdW1tYXJ5IGluZGV4IGF0IHRoZSBlbmQgb2YgdGhlIGZpbGUgdG8gZmV0Y2ggb25seSB0aGUgYnl0CiAKICMjIyMgQWxsb3dpbmcgZnVsbCByZW1vdGUgc2NhbnMKIAotU29tZSBvcGVyYXRpb25zIG11c3QgcmVhZCBvciBkb3dubG9hZCB0aGUgZW50aXJlIHJlbW90ZSBmaWxlOiBjb21tYW5kcyB0aGF0IHJld3JpdGUgYSBmaWxlIChgZmlsdGVyYCwgYG1lcmdlYCwgYGNvbnZlcnRgLCBgcmVjb3ZlcmApIGFuZCBhbnkgY29tbWFuZCB0aGF0IGZhbGxzIGJhY2sgdG8gYSBsaW5lYXIgc2NhbiAoZm9yIGV4YW1wbGUgYSByZW1vdGUgZmlsZSB3aXRoIG5vIHN1bW1hcnkgc2VjdGlvbiwgYSBzZXJ2ZXIgdGhhdCBkb2VzIG5vdCBzdXBwb3J0IHJhbmdlIHJlcXVlc3RzLCBvciBgY2F0YCByZWFkaW5nIG1lc3NhZ2UgcGF5bG9hZHMpLiBUaGVzZSByZXF1aXJlIHRoZSBgLS1hbGxvdy1yZW1vdGUtc2NhbmAgZmxhZyB0byBvcHQgaW4gdG8gdGhlIGxhcmdlciB0cmFuc2ZlcjoKK0EgdG9waWMgb3IgdGltZSBmaWx0ZXIgY2FuIHJlYWQgc2VsZWN0ZWQgY2h1bmtzIGRpcmVjdGx5IGZyb20gYW4gaW5kZXhlZCByZW1vdGUgZmlsZSB3aGVuIHRoZSBzdW1tYXJ5IGFjY291bnRzIGZvciB0aGUgbWVzc2FnZXMgYW5kIHJlcXVlc3RlZCBtZXRhZGF0YSBhbmQgYXR0YWNobWVudHMuIEEgYnJvYWQgZmlsdGVyLCBhbiBpbmNvbXBsZXRlIGluZGV4LCBvciBhIGxhc3QtcGVyLWNoYW5uZWwgcXVlcnkgdXNlcyB0aGUgd2hvbGUtZmlsZSBwYXRoLgorCitTb21lIG9wZXJhdGlvbnMgbXVzdCByZWFkIG9yIGRvd25sb2FkIHRoZSBlbnRpcmUgcmVtb3RlIGZpbGU6IHdob2xlLWZpbGUgcmV3cml0ZXMgKGBmaWx0ZXJgLCBgbWVyZ2VgLCBgY29udmVydGAsIGByZWNvdmVyYCkgYW5kIGFueSBjb21tYW5kIHRoYXQgZmFsbHMgYmFjayB0byBhIGxpbmVhciBzY2FuIChmb3IgZXhhbXBsZSBhIHJlbW90ZSBmaWxlIHdpdGggbm8gc3VtbWFyeSBzZWN0aW9uLCBhIHNlcnZlciB0aGF0IGRvZXMgbm90IHN1cHBvcnQgcmFuZ2UgcmVxdWVzdHMsIG9yIGBjYXRgIHJlYWRpbmcgbWVzc2FnZSBwYXlsb2FkcykuIFRoZXNlIHJlcXVpcmUgdGhlIGAtLWFsbG93LXJlbW90ZS1zY2FuYCBmbGFnIHRvIG9wdCBpbiB0byB0aGUgbGFyZ2VyIHRyYW5zZmVyOgogCiBgYGAKIG1jYXAgZmlsdGVyIC0tYWxsb3ctcmVtb3RlLXNjYW4gZ3M6Ly95b3VyLXJlbW90ZS1idWNrZXQvZGVtby5tY2FwIC1vIGZpbHRlcmVkLm1jYXAgLXkgL3RmCg==\
+        \ | base64 -d | git apply -\nset -euxo pipefail\nsudo apt-get -qq update\n\
+        sudo apt-get -qq install -y protobuf-compiler\ngit lfs pull\ncargo fmt --all\
+        \ -- --check\ncargo test -p mcap-cli --locked\ncargo build -p mcap-cli --locked\n\
+        python3 -m venv /tmp/mcap-env\n/tmp/mcap-env/bin/pip install -q mcap\n/tmp/mcap-env/bin/python\
+        \ - <<'PY'\n\"\"\"Exercise the Rust CLI over HTTP, inspect actual range traffic\
+        \ and reread the output.\"\"\"\nimport random,subprocess,tempfile,threading\n\
+        from pathlib import Path\nfrom http.server import HTTPServer,BaseHTTPRequestHandler\n\
+        from mcap.writer import Writer,CompressionType,IndexType\nfrom mcap.reader\
+        \ import make_reader\ndef read(p):\n    with p.open('rb') as f:\n        r=make_reader(f)\n\
+        \        return ([(s.name,c.topic,m.sequence,m.log_time,m.publish_time,m.data)\
+        \ for s,c,m in r.iter_messages(topics=['/lidar'])],\n                [(m.name,m.metadata)\
+        \ for m in r.iter_metadata()],\n                [(a.name,a.data) for a in\
+        \ r.iter_attachments()])\ndef exercise(root,index):\n    infile=root/'recording.mcap';outfile=root/'filtered.mcap'\n\
+        \    with infile.open('wb') as out:\n        w=Writer(out,chunk_size=100000,compression=CompressionType.NONE,index_types=IndexType.ALL\
+        \ if index else IndexType.NONE)\n        w.start();schema=w.register_schema('sample','text',b'bytes')\n\
+        \        ids=[w.register_channel(t,'opaque',schema) for t in ('/lidar','/imu')]\n\
+        \        rng=random.Random(283)\n        for i in range(3072):w.add_message(ids[int(i>=64)],i,rng.randbytes(4096),i+10,i)\n\
+        \        w.add_metadata('config',{'unit':'mm'});w.add_attachment(12,11,'note','text/plain',b'run\
+        \ 1');w.finish()\n    size=infile.stat().st_size; traffic=[]\n    class Serve(BaseHTTPRequestHandler):\n\
+        \        def log_message(self,*args):pass\n        def do_HEAD(self):\n  \
+        \          self.send_response(200);self.send_header('Content-Length',str(size));self.send_header('Accept-Ranges','bytes');self.end_headers()\n\
+        \        def do_GET(self):\n            value=self.headers.get('Range')\n\
+        \            start,end=0,size-1\n            if value:\n                left,right=value[6:].split('-')\n\
+        \                if left:start=int(left);end=min(size-1,int(right)) if right\
+        \ else size-1\n                else:start=max(0,size-int(right))\n       \
+        \     traffic.append((start,end,value))\n            self.send_response(206\
+        \ if value else 200)\n            self.send_header('Content-Length',str(end-start+1));self.send_header('Accept-Ranges','bytes')\n\
+        \            if value:self.send_header('Content-Range',f'bytes {start}-{end}/{size}')\n\
+        \            self.end_headers()\n            with infile.open('rb') as handle:handle.seek(start);self.wfile.write(handle.read(end-start+1))\n\
+        \    with HTTPServer(('127.0.0.1',0),Serve) as server:\n        t=threading.Thread(target=server.serve_forever,daemon=True);t.start()\n\
+        \        try:\n            url=f'http://127.0.0.1:{server.server_port}/input.mcap'\n\
+        \            cmd=['target/debug/mcap','filter',url,'-o',str(outfile),'-y','/lidar']\n\
+        \            if not index:outfile.write_bytes(b'keep me')\n            p=subprocess.run(cmd,capture_output=True,text=True)\n\
+        \            if not index:\n                assert p.returncode!=0 and '--allow-remote-scan'\
+        \ in p.stderr and outfile.read_bytes()==b'keep me',p.stderr\n            \
+        \    assert all(r for _,_,r in traffic)\n                cmd.insert(1,'--allow-remote-scan');subprocess.run(cmd,check=True)\n\
+        \            else:\n                assert p.returncode==0,p.stderr\n    \
+        \            transferred=sum(e-s+1 for s,e,_ in traffic)\n               \
+        \ assert all(r for _,_,r in traffic) and transferred<size//3,(traffic,size)\n\
+        \                print('indexed bytes',transferred,'of',size,'requests',len(traffic))\n\
+        \            actual=read(outfile);assert len(actual[0])==64 and actual[1]\
+        \ and actual[2]\n            if index:assert actual==read(infile)\n      \
+        \      with outfile.open('rb') as f:assert {c.topic for _,c,_ in make_reader(f).iter_messages()}=={'/lidar'}\n\
+        \        finally:server.shutdown();t.join()\nwith tempfile.TemporaryDirectory()\
+        \ as d:\n    for index in (True,False):exercise(Path(d),index)\n\n\nPY\n\n"
