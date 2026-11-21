@@ -1,45 +1,150 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: OpenJPEG range reads and PyVRP constrained search
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
+  jpeg2000:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '3'
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: earth-mover/icechunk
+        ref: 035afd80ddadce79cb85ca8f5070b655ef4cf794
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Decode the OpenJPEG fixture and reproduce the batched checksum error
+      run: "python -m pip install \"icechunk==2.3.1\" \"zarr==3.4.2\" pillow maturin\
+        \ pytest pytest-xdist pytest-asyncio boto3 mypy-boto3-s3 hypothesis requests\n\
+        cat > /tmp/jpeg2000_ranges.py <<'TASK_FILE'\n\"\"\"Exercise a split tile in\
+        \ a real JP2 object through persisted Icechunk references.\"\"\"\nimport asyncio\n\
+        import hashlib\nimport io\nimport json\nimport math\nimport re\nimport struct\n\
+        import threading\nfrom http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\n\
+        from pathlib import Path\nimport os\nimport icechunk as ic\nimport zarr\n\
+        from PIL import Image\nfrom zarr.core.buffer import default_buffer_prototype\n\
+        from zarr.abc.store import RangeByteRequest\n\nh=Path(__file__).resolve().parent\n\
+        raw=(h/'small_world.jp2').read_bytes()\nassert hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\\\
+        0'+raw).hexdigest()=='9de79db4489fae7cf7ddd5450872dd158b30d246'\netag='\"\
+        '+hashlib.sha256(raw).hexdigest()+'\"'\n\ndef layout():\n    box=0\n    while\
+        \ box<len(raw):\n        size,kind=struct.unpack_from('>I4s',raw,box)\n  \
+        \      assert size>=8 and box+size<=len(raw)\n        if kind==b'jp2c':break\n\
+        \        box+=size\n    begin=box+8; end=box+size\n    assert raw[begin:begin+2]==b'\\\
+        xff\\x4f'\n    i=begin+2; segments=[];parts={}\n    while raw[i:i+2]!=b'\\\
+        xff\\x90':\n        tag,n=struct.unpack_from('>HH',raw,i)\n        assert\
+        \ tag in (0xff51,0xff52,0xff5c,0xff55,0xff64) and n>=2\n        segments.append((tag,i,i+n+2));i+=n+2\n\
+        \    main=(begin,i)\n    while raw[i:i+2]==b'\\xff\\x90':\n        n,tile,size,seq,total=struct.unpack_from('>HHIBB',raw,i+2)\n\
+        \        assert n==10 and size>=14 and i+size<=end\n        group=parts.setdefault(tile,[])\n\
+        \        assert seq==len(group) and seq<total\n        group.append((i,i+size));i+=size\n\
+        \    assert raw[i:end]==b'\\xff\\xd9'\n    return main,segments,parts\n\n\
+        class Server(BaseHTTPRequestHandler):\n    def log_message(self,*args):pass\n\
+        \    def send_file(self,body):\n        assert self.path=='/small_world.jp2'\n\
+        \        r=self.headers.get('Range');cond=self.headers.get('If-Match')\n \
+        \       a,b=0,len(raw)-1\n        if r:\n            m=re.fullmatch(r'bytes=(\\\
+        d+)-(\\d+)',r); assert m,r\n            a,b=map(int,m.groups());assert 0<=a<=b<len(raw)\n\
+        \        self.server.events.append((self.command,a,b+1,cond,r))\n        if\
+        \ cond is not None and cond.strip('\"')!=self.server.etag.strip('\"'):\n \
+        \           self.send_response(412);self.send_header('Content-Length','0');self.end_headers();return\n\
+        \        self.send_response(206 if r else 200)\n        self.send_header('Content-Length',str(b-a+1))\n\
+        \        self.send_header('ETag',self.server.etag)\n        self.send_header('Accept-Ranges','bytes')\n\
+        \        if r:self.send_header('Content-Range',f'bytes {a}-{b}/{len(raw)}')\n\
+        \        self.end_headers()\n        if body:self.wfile.write(raw[a:b+1])\n\
+        \    def do_GET(self):self.send_file(True)\n    def do_HEAD(self):self.send_file(False)\n\
+        \ndef decode_tile(header, segments, origin, tile, pieces):\n    # In a one-tile\
+        \ codestream discard the original TLM and renumber SOTs.\n    # Keep the tile\
+        \ origin in the original reference grid to preserve wavelet parity.\n    isolated=bytearray(header[:2])\n\
+        \    for tag,a,b in segments:\n        s=bytearray(header[a-origin:b-origin])\n\
+        \        if tag==0xff55:continue\n        if tag==0xff51:\n            width,height,x0,y0,tw,th,tx,ty=struct.unpack_from('>8I',s,6)\n\
+        \            cols=math.ceil((width-tx)/tw)\n            left=tx+(tile%cols)*tw;top=ty+(tile//cols)*th\n\
+        \            x=min(left+tw,width);y=min(top+th,height)\n            struct.pack_into('>8I',s,6,x,y,max(x0,left),max(y0,top),tw,th,left,top)\n\
+        \            bounds=(max(left,x0)-x0,max(top,y0)-y0,x-x0,y-y0)\n        isolated+=s\n\
+        \    for piece in pieces:\n        assert int.from_bytes(piece[4:6],'big')==tile\n\
+        \        isolated+=piece[:4]+b'\\0\\0'+piece[6:]\n    isolated+=b'\\xff\\\
+        xd9'\n    with Image.open(io.BytesIO(isolated)) as im:\n        return bounds,im.convert('RGB')\n\
+        \ndef covered(ranges):\n    spans=[]\n    for a,b in sorted(ranges):\n   \
+        \     if spans and spans[-1][1]==a:\n            spans[-1]=(spans[-1][0],b)\n\
+        \        else:\n            assert not spans or spans[-1][1]<=a\n        \
+        \    spans.append((a,b))\n    return spans\n\nasync def run(server):\n   \
+        \ main,segments,tiles=layout()\n    physical=[main]+sorted(p for parts in\
+        \ tiles.values() for p in parts)\n    keys={p:f'parts/{i}/c/0' for i,p in\
+        \ enumerate(physical)}\n    url=f'http://127.0.0.1:{server.server_port}/'\n\
+        \    cfg=ic.RepositoryConfig.default()\n    cfg.set_virtual_chunk_container(ic.VirtualChunkContainer(url,ic.http_store({'allow_http':'true'})))\n\
+        \    repo=ic.Repository.open_or_create(storage=ic.in_memory_storage(),config=cfg,authorize_virtual_chunk_access={url:ic.credentials.HttpAccess})\n\
+        \    ses=repo.writable_session('main')\n    root=zarr.group(store=ses.store)\n\
+        \    for (a,b),key in keys.items():\n        root.create_array(key.rsplit('/c/',1)[0],shape=(b-a,),chunks=(b-a,),dtype='u1',compressors=None)\n\
+        \        ses.store.set_virtual_ref(key,url+'small_world.jp2',offset=a,length=b-a,checksum=etag,validate_container=True)\n\
+        \    snap=ses.commit('Record physical JPEG 2000 tile-part extents')\n    store=repo.readonly_session(snapshot_id=snap).store\n\
+        \    prototype=default_buffer_prototype()\n    async def read(parts,lo=0,hi=None):\n\
+        \        # Map a logical half-open byte request to only intersecting physical\
+        \ references.\n        end=sum(b-a for a,b in parts);hi=end if hi is None\
+        \ else hi\n        assert 0<=lo<=hi<=end\n        offset=0;requests=[];expected=[]\n\
+        \        for a,b in parts:\n            length=b-a\n            l=max(lo-offset,0);r=min(hi-offset,length);offset+=length\n\
+        \            if l<r:\n                requests.append((keys[a,b],RangeByteRequest(l,r)))\n\
+        \                expected.append((a+l,a+r))\n        if not requests:return\
+        \ [],[]\n        values=await store.get_partial_values(prototype,requests)\n\
+        \        assert all(v is not None for v in values)\n        return [v.to_bytes()\
+        \ for v in values],expected\n    with Image.open(io.BytesIO(raw)) as im: full=im.convert('RGB')\n\
+        \    header=(await read([main]))[0][0]\n    results=[]\n    for tile,parts\
+        \ in tiles.items():\n        server.events.clear()\n        values,expected=await\
+        \ read(parts)\n        gets=[(a,b) for verb,a,b,cond,r in server.events if\
+        \ verb=='GET' and r]\n        assert covered(gets)==covered(expected),server.events\n\
+        \        request_count=len(gets)\n        assert all(cond and cond.strip('\"\
+        ')==etag.strip('\"') for verb,a,b,cond,r in server.events if verb=='GET')\n\
+        \        assert all(verb!='GET' or r for verb,a,b,cond,r in server.events)\n\
+        \        bounds,image=decode_tile(header,segments,main[0],tile,values)\n \
+        \       reference=full.crop(bounds);assert image.size==reference.size and\
+        \ image.tobytes()==reference.tobytes()\n        end1=parts[0][1]-parts[0][0];server.events.clear()\n\
+        \        sliced,spans=await read(parts,end1-2,end1+3)\n        assert b''.join(sliced)==b''.join(values)[end1-2:end1+3]\n\
+        \        assert covered([(a,b) for m,a,b,_,_ in server.events if m=='GET'])==covered(spans)\n\
+        \        assert await read(parts,0,0)==([],[])\n        results.append(dict(tile=tile,pixels=image.size,http_gets=request_count,ranges=expected,requested=sum(b-a\
+        \ for a,b in expected),skipped=expected[-1][1]-expected[0][0]-sum(b-a for\
+        \ a,b in expected),sha256=hashlib.sha256(image.tobytes()).hexdigest(),cross_boundary=spans))\n\
+        \    server.etag='\"changed\"';server.events.clear()\n    try:\n        await\
+        \ store.get(keys[tiles[0][0]],prototype,RangeByteRequest(0,1))\n    except\
+        \ ic.IcechunkError as err:\n        individual=type(err).__name__\n      \
+        \  assert 'has changed' in str(err).lower() or '412' in str(err),str(err)\n\
+        \    else:raise AssertionError('Individual read did not reject a changed object')\n\
+        \    server.events.clear()\n    try:await read(tiles[0],0,1)\n    except (ic.IcechunkError,TypeError)\
+        \ as err:\n        mismatch=type(err).__name__\n        assert mismatch==(individual\
+        \ if os.environ.get('CHECK_PATCHED_ICECHUNK') else 'TypeError'),str(err)\n\
+        \        assert server.events and all(cond and cond.strip('\"')==etag.strip('\"\
+        ') for method,_,_,cond,_ in server.events if method=='GET')\n    else:raise\
+        \ AssertionError('Batched read did not reject a changed object')\n    return\
+        \ dict(icechunk=ic.__version__,file_bytes=len(raw),header=main,tiles=results,individual_etag_error=individual,batch_etag_error=mismatch)\n\
+        if __name__=='__main__':\n    with ThreadingHTTPServer(('127.0.0.1',0),Server)\
+        \ as server:\n        server.etag=etag;server.events=[]\n        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()\n\
+        \        try:print(json.dumps(asyncio.run(run(server)),indent=2))\n      \
+        \  finally:server.shutdown();thread.join()\nTASK_FILE\ncurl -fsSL https://raw.githubusercontent.com/uclouvain/openjpeg-data/39524bd3a601d90ed8e0177559400d23945f96a9/input/nonregression/small_world_non_consecutive_tilepart_tlm.jp2\
+        \ -o /tmp/small_world.jp2\npython /tmp/jpeg2000_ranges.py\n"
+    - name: Build the patched native extension and retest the same JPEG 2000 object
+      run: "echo ZGlmZiAtLWdpdCBhL2ljZWNodW5rLXB5dGhvbi9weXRob24vaWNlY2h1bmsvX2ljZWNodW5rX3B5dGhvbi5weWkgYi9pY2VjaHVuay1weXRob24vcHl0aG9uL2ljZWNodW5rL19pY2VjaHVua19weXRob24ucHlpCmluZGV4IGQwZTBmNDEuLjZkNDcxNjEgMTAwNjQ0Ci0tLSBhL2ljZWNodW5rLXB5dGhvbi9weXRob24vaWNlY2h1bmsvX2ljZWNodW5rX3B5dGhvbi5weWkKKysrIGIvaWNlY2h1bmstcHl0aG9uL3B5dGhvbi9pY2VjaHVuay9faWNlY2h1bmtfcHl0aG9uLnB5aQpAQCAtMjc3Nyw3ICsyNzc3LDcgQEAgY2xhc3MgUHlTdG9yZToKICAgICApIC0+IGJ5dGVzOiAuLi4KICAgICBhc3luYyBkZWYgZ2V0X3BhcnRpYWxfdmFsdWVzKAogICAgICAgICBzZWxmLCBrZXlfcmFuZ2VzOiBsaXN0W3R1cGxlW3N0ciwgdHVwbGVbaW50IHwgTm9uZSwgaW50IHwgTm9uZV1dXQotICAgICkgLT4gbGlzdFtieXRlc106IC4uLgorICAgICkgLT4gbGlzdFtieXRlcyB8IE5vbmVdOiAuLi4KICAgICBhc3luYyBkZWYgZXhpc3RzKHNlbGYsIGtleTogc3RyKSAtPiBib29sOiAuLi4KICAgICBAcHJvcGVydHkKICAgICBkZWYgc3VwcG9ydHNfd3JpdGVzKHNlbGYpIC0+IGJvb2w6IC4uLgpkaWZmIC0tZ2l0IGEvaWNlY2h1bmstcHl0aG9uL3B5dGhvbi9pY2VjaHVuay9zdG9yZS5weSBiL2ljZWNodW5rLXB5dGhvbi9weXRob24vaWNlY2h1bmsvc3RvcmUucHkKaW5kZXggNDhjYjg5ZC4uOWNiZTVhMyAxMDA2NDQKLS0tIGEvaWNlY2h1bmstcHl0aG9uL3B5dGhvbi9pY2VjaHVuay9zdG9yZS5weQorKysgYi9pY2VjaHVuay1weXRob24vcHl0aG9uL2ljZWNodW5rL3N0b3JlLnB5CkBAIC0xOTgsNyArMTk4LDcgQEAgY2xhc3MgSWNlY2h1bmtTdG9yZShTdG9yZSwgU3luY01peGluKToKICAgICAgICAgIyB0byBhIGxpc3QgaGVyZSBmaXJzdC4gUG9zc2libGUgb3Bwb3J0dW5pdHkgZm9yIG9wdGltaXphdGlvbi4KICAgICAgICAgcmFuZ2VzID0gWyhrWzBdLCBfYnl0ZV9yZXF1ZXN0X3RvX3R1cGxlKGtbMV0pKSBmb3IgayBpbiBrZXlfcmFuZ2VzXQogICAgICAgICByZXN1bHQgPSBhd2FpdCBzZWxmLl9zdG9yZS5nZXRfcGFydGlhbF92YWx1ZXMobGlzdChyYW5nZXMpKQotICAgICAgICByZXR1cm4gW3Byb3RvdHlwZS5idWZmZXIuZnJvbV9ieXRlcyhyKSBmb3IgciBpbiByZXN1bHRdCisgICAgICAgIHJldHVybiBbcHJvdG90eXBlLmJ1ZmZlci5mcm9tX2J5dGVzKHIpIGlmIHIgaXMgbm90IE5vbmUgZWxzZSBOb25lIGZvciByIGluIHJlc3VsdF0KIAogICAgIGFzeW5jIGRlZiBleGlzdHMoc2VsZiwga2V5OiBzdHIpIC0+IGJvb2w6CiAgICAgICAgICIiIkNoZWNrIGlmIGEga2V5IGV4aXN0cyBpbiB0aGUgc3RvcmUuCmRpZmYgLS1naXQgYS9pY2VjaHVuay1weXRob24vc3JjL3N0b3JlLnJzIGIvaWNlY2h1bmstcHl0aG9uL3NyYy9zdG9yZS5ycwppbmRleCA0ZjZiMjZjLi5jNjdkYzc3IDEwMDY0NAotLS0gYS9pY2VjaHVuay1weXRob24vc3JjL3N0b3JlLnJzCisrKyBiL2ljZWNodW5rLXB5dGhvbi9zcmMvc3RvcmUucnMKQEAgLTI3NSwxNSArMjc1LDE1IEBAIGltcGwgUHlTdG9yZSB7CiAgICAgICAgICAgICAgICAgLmF3YWl0CiAgICAgICAgICAgICAgICAgLm1hcF9lcnIoUHlJY2VjaHVua1N0b3JlRXJyb3I6OlN0b3JlRXJyb3IpPzsKIAotICAgICAgICAgICAgLy8gRklYTUU6IHRoaXMgcHJvY2Vzc2luZyBpcyBoaWRpbmcgZXJyb3JzIGluIGNlcnRhaW4ga2V5cwotICAgICAgICAgICAgbGV0IHJlc3VsdCA9IHBhcnRpYWxfdmFsdWVzX3N0cmVhbQorICAgICAgICAgICAgbGV0IHZhbHVlcyA9IHBhcnRpYWxfdmFsdWVzX3N0cmVhbQogICAgICAgICAgICAgICAgIC5pbnRvX2l0ZXIoKQotICAgICAgICAgICAgICAgIC8vIElmIHdlIHdhbnQgdG8gZXJyb3IgaW5zdGVhZCBvZiByZXR1cm5pbmcgTm9uZSB3ZSBjYW4gY29sbGVjdCBpbnRvCi0gICAgICAgICAgICAgICAgLy8gYSBSZXN1bHQ8VmVjPF8+LCBfPiBhbmQgc2hvcnQgY2lyY3VpdAotICAgICAgICAgICAgICAgIC5tYXAofHh8IHgubWFwKFZlYzo6ZnJvbSkub2soKSkKLSAgICAgICAgICAgICAgICAuY29sbGVjdDo6PFZlYzxfPj4oKTsKLQotICAgICAgICAgICAgT2socmVzdWx0KQorICAgICAgICAgICAgICAgIC5tYXAofHZhbHVlfCBtYXRjaCB2YWx1ZSB7CisgICAgICAgICAgICAgICAgICAgIE9rKGRhdGEpID0+IE9rKFNvbWUoUHlCeXRlczo6bmV3KGRhdGEpKSksCisgICAgICAgICAgICAgICAgICAgIEVycihTdG9yZUVycm9yIHsga2luZDogU3RvcmVFcnJvcktpbmQ6Ok5vdEZvdW5kKF8pLCAuLiB9KSA9PiBPayhOb25lKSwKKyAgICAgICAgICAgICAgICAgICAgRXJyKGVycikgPT4gRXJyKFB5SWNlY2h1bmtTdG9yZUVycm9yOjpTdG9yZUVycm9yKGVycikpLAorICAgICAgICAgICAgICAgIH0pCisgICAgICAgICAgICAgICAgLmNvbGxlY3Q6OjxSZXN1bHQ8VmVjPF8+LCBfPj4oKT87CisgICAgICAgICAgICBPayh2YWx1ZXMpCiAgICAgICAgIH0pCiAgICAgfQogCmRpZmYgLS1naXQgYS9pY2VjaHVuay1weXRob24vdGVzdHMvdGVzdF9zdG9yZS5weSBiL2ljZWNodW5rLXB5dGhvbi90ZXN0cy90ZXN0X3N0b3JlLnB5CmluZGV4IDQ3NWFiODYuLjk0NjFiM2UgMTAwNjQ0Ci0tLSBhL2ljZWNodW5rLXB5dGhvbi90ZXN0cy90ZXN0X3N0b3JlLnB5CisrKyBiL2ljZWNodW5rLXB5dGhvbi90ZXN0cy90ZXN0X3N0b3JlLnB5CkBAIC0xLDE1ICsxLDM4IEBACiBpbXBvcnQganNvbgogCiBpbXBvcnQgbnVtcHkgYXMgbnAKK2ltcG9ydCBweXRlc3QKIAogaW1wb3J0IGljZWNodW5rIGFzIGljCiBpbXBvcnQgemFycgogZnJvbSB0ZXN0cy5jb25mdGVzdCBpbXBvcnQgcGFyc2VfcmVwbworZnJvbSB6YXJyLmFiYy5zdG9yZSBpbXBvcnQgUmFuZ2VCeXRlUmVxdWVzdAogZnJvbSB6YXJyLmNvcmUuYnVmZmVyIGltcG9ydCBjcHUsIGRlZmF1bHRfYnVmZmVyX3Byb3RvdHlwZQogCiBybmcgPSBucC5yYW5kb20uZGVmYXVsdF9ybmcoc2VlZD0xMjM0NSkKIAogCithc3luYyBkZWYgdGVzdF9wYXJ0aWFsX3ZhbHVlc193aXRoX21pc3Npbmdfa2V5KGFueV9zcGVjX3ZlcnNpb246IGludCB8IE5vbmUpIC0+IE5vbmU6CisgICAgcmVwbyA9IHBhcnNlX3JlcG8oIm1lbW9yeSIsICJ0ZXN0IiwgYW55X3NwZWNfdmVyc2lvbikKKyAgICBzdG9yZSA9IHJlcG8ud3JpdGFibGVfc2Vzc2lvbigibWFpbiIpLnN0b3JlCisgICAgemFyci5jcmVhdGVfYXJyYXkoc3RvcmUsIHNoYXBlPSgxMiwpLCBjaHVua3M9KDYsKSwgZHR5cGU9InUxIiwgY29tcHJlc3NvcnM9Tm9uZSkKKyAgICBwcm90b3R5cGUgPSBkZWZhdWx0X2J1ZmZlcl9wcm90b3R5cGUoKQorICAgIGF3YWl0IHN0b3JlLnNldCgiYy8wIiwgcHJvdG90eXBlLmJ1ZmZlci5mcm9tX2J5dGVzKGIiYWJjZGVmIikpCisKKyAgICB2YWx1ZXMgPSBhd2FpdCBzdG9yZS5nZXRfcGFydGlhbF92YWx1ZXMoCisgICAgICAgIHByb3RvdHlwZSwKKyAgICAgICAgWygiYy8wIiwgUmFuZ2VCeXRlUmVxdWVzdCgyLCA0KSksICgiYy8xIiwgTm9uZSksICgiYy8wIiwgTm9uZSldLAorICAgICkKKyAgICBhc3NlcnQgW3YudG9fYnl0ZXMoKSBpZiB2IGlzIG5vdCBOb25lIGVsc2UgTm9uZSBmb3IgdiBpbiB2YWx1ZXNdID09IFsKKyAgICAgICAgYiJjZCIsCisgICAgICAgIE5vbmUsCisgICAgICAgIGIiYWJjZGVmIiwKKyAgICBdCisKKyAgICB3aXRoIHB5dGVzdC5yYWlzZXMoaWMuSW52YWxpZElucHV0RXJyb3IpOgorICAgICAgICBhd2FpdCBzdG9yZS5nZXRfcGFydGlhbF92YWx1ZXMocHJvdG90eXBlLCBbKCJjLzEiLCBOb25lKSwgKCJiYWQva2V5IiwgTm9uZSldKQorCisKIGFzeW5jIGRlZiB0ZXN0X3N0b3JlX2NsZWFyX21ldGFkYXRhX2xpc3QoYW55X3NwZWNfdmVyc2lvbjogaW50IHwgTm9uZSkgLT4gTm9uZToKICAgICByZXBvID0gcGFyc2VfcmVwbygibWVtb3J5IiwgInRlc3QiLCBhbnlfc3BlY192ZXJzaW9uKQogICAgIHNlc3Npb24gPSByZXBvLndyaXRhYmxlX3Nlc3Npb24oIm1haW4iKQo=\
+        \ | base64 -d | git apply -\ncd icechunk-python\nmaturin build --profile dev\
+        \ --interpreter python --out /tmp/wheels\npython -m pip install --no-deps\
+        \ --force-reinstall /tmp/wheels/*.whl\ncd /tmp\nCHECK_PATCHED_ICECHUNK=1 python\
+        \ jpeg2000_ranges.py\ncd \"$GITHUB_WORKSPACE/icechunk-python\"\npython -m\
+        \ pytest -q -o addopts= -o asyncio_mode=auto tests/test_store.py\ncd \"$GITHUB_WORKSPACE\"\
+        \ncat > /tmp/wire-probe.rs <<'TASK_FILE'\n#[cfg(test)]\nmod split_reader_probe\
+        \ {\n    use super::*;\n\n    // Exercise the *current reader* with extra\
+        \ present in a valid flatbuffer.\n    // These bytes are opaque and do not\
+        \ define a proposed v2.x format.\n    #[test]\n    fn existing_reader_with_additional_extents()\
+        \ {\n        for legacy_location in [true, false] {\n            let mut fbb\
+        \ = flatbuffers::FlatBufferBuilder::new();\n            let index = Some(fbb.create_vector(&[0u32]));\n\
+        \            let extra = Some(fbb.create_vector(&[42u8, 9]));\n          \
+        \  let location = legacy_location.then(|| fbb.create_string(\"https://example.com/tile.jp2\"\
+        ));\n            let root = generated::ChunkRef::create(&mut fbb, &generated::ChunkRefArgs\
+        \ {\n                index, extra, location, offset: 2591, length: 17774,\
+        \ ..Default::default()\n            });\n            fbb.finish(root, None);\n\
+        \            let chunk = flatbuffers::root::<generated::ChunkRef<'_>>(fbb.finished_data()).unwrap();\n\
+        \            let decoded = ref_to_payload(chunk, None);\n            if legacy_location\
+        \ {\n                let ChunkPayload::Virtual(reference) = decoded.unwrap()\
+        \ else { panic!(\"expected virtual\") };\n                assert_eq!((reference.offset,\
+        \ reference.length), (2591, 17774));\n            } else {\n             \
+        \   assert!(decoded.is_err());\n            }\n        }\n    }\n}\nTASK_FILE\n\
+        cat /tmp/wire-probe.rs >> icechunk-format/src/manifest.rs\ncargo test -p icechunk-format\
+        \ --lib existing_reader_with_additional_extents"
