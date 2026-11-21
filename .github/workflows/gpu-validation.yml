@@ -1,45 +1,353 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: OpenJPEG range reads and PyVRP constrained search
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
+  jpeg2000:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '3'
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: earth-mover/icechunk
+        ref: 035afd80ddadce79cb85ca8f5070b655ef4cf794
+        persist-credentials: false
+    - &id001
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Decode the OpenJPEG fixture and reproduce the batched checksum error
+      run: "python -m pip install \"icechunk==2.3.1\" \"zarr==3.4.2\" pillow maturin\
+        \ pytest pytest-asyncio boto3 mypy-boto3-s3 hypothesis requests\ncat > /tmp/jpeg2000_ranges.py\
+        \ <<'TASK_FILE'\n\"\"\"Exercise a split tile in a real JP2 object through\
+        \ persisted Icechunk references.\"\"\"\nimport asyncio\nimport hashlib\nimport\
+        \ io\nimport json\nimport math\nimport re\nimport struct\nimport threading\n\
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\nfrom\
+        \ pathlib import Path\nimport os\nimport icechunk as ic\nimport zarr\nfrom\
+        \ PIL import Image\nfrom zarr.core.buffer import default_buffer_prototype\n\
+        from zarr.abc.store import RangeByteRequest\n\nh=Path(__file__).resolve().parent\n\
+        raw=(h/'small_world.jp2').read_bytes()\nassert hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\\\
+        0'+raw).hexdigest()=='9de79db4489fae7cf7ddd5450872dd158b30d246'\netag='\"\
+        '+hashlib.sha256(raw).hexdigest()+'\"'\n\ndef layout():\n    box=0\n    while\
+        \ box<len(raw):\n        size,kind=struct.unpack_from('>I4s',raw,box)\n  \
+        \      assert size>=8 and box+size<=len(raw)\n        if kind==b'jp2c':break\n\
+        \        box+=size\n    begin=box+8; end=box+size\n    assert raw[begin:begin+2]==b'\\\
+        xff\\x4f'\n    i=begin+2; segments=[];parts={}\n    while raw[i:i+2]!=b'\\\
+        xff\\x90':\n        tag,n=struct.unpack_from('>HH',raw,i)\n        assert\
+        \ tag in (0xff51,0xff52,0xff5c,0xff55,0xff64) and n>=2\n        segments.append((tag,i,i+n+2));i+=n+2\n\
+        \    main=(begin,i)\n    while raw[i:i+2]==b'\\xff\\x90':\n        n,tile,size,seq,total=struct.unpack_from('>HHIBB',raw,i+2)\n\
+        \        assert n==10 and size>=14 and i+size<=end\n        group=parts.setdefault(tile,[])\n\
+        \        assert seq==len(group) and seq<total\n        group.append((i,i+size));i+=size\n\
+        \    assert raw[i:end]==b'\\xff\\xd9'\n    return main,segments,parts\n\n\
+        class Server(BaseHTTPRequestHandler):\n    def log_message(self,*args):pass\n\
+        \    def send_file(self,body):\n        assert self.path=='/small_world.jp2'\n\
+        \        r=self.headers.get('Range');cond=self.headers.get('If-Match')\n \
+        \       a,b=0,len(raw)-1\n        if r:\n            m=re.fullmatch(r'bytes=(\\\
+        d+)-(\\d+)',r); assert m,r\n            a,b=map(int,m.groups());assert 0<=a<=b<len(raw)\n\
+        \        self.server.events.append((self.command,a,b+1,cond,r))\n        if\
+        \ cond is not None and cond.strip('\"')!=self.server.etag.strip('\"'):\n \
+        \           self.send_response(412);self.send_header('Content-Length','0');self.end_headers();return\n\
+        \        self.send_response(206 if r else 200)\n        self.send_header('Content-Length',str(b-a+1))\n\
+        \        self.send_header('ETag',self.server.etag)\n        self.send_header('Accept-Ranges','bytes')\n\
+        \        if r:self.send_header('Content-Range',f'bytes {a}-{b}/{len(raw)}')\n\
+        \        self.end_headers()\n        if body:self.wfile.write(raw[a:b+1])\n\
+        \    def do_GET(self):self.send_file(True)\n    def do_HEAD(self):self.send_file(False)\n\
+        \ndef decode_tile(header, segments, origin, tile, pieces):\n    # In a one-tile\
+        \ codestream discard the original TLM and renumber SOTs.\n    # Keep the tile\
+        \ origin in the original reference grid to preserve wavelet parity.\n    isolated=bytearray(header[:2])\n\
+        \    for tag,a,b in segments:\n        s=bytearray(header[a-origin:b-origin])\n\
+        \        if tag==0xff55:continue\n        if tag==0xff51:\n            width,height,x0,y0,tw,th,tx,ty=struct.unpack_from('>8I',s,6)\n\
+        \            cols=math.ceil((width-tx)/tw)\n            left=tx+(tile%cols)*tw;top=ty+(tile//cols)*th\n\
+        \            x=min(left+tw,width);y=min(top+th,height)\n            struct.pack_into('>8I',s,6,x,y,max(x0,left),max(y0,top),tw,th,left,top)\n\
+        \            bounds=(max(left,x0)-x0,max(top,y0)-y0,x-x0,y-y0)\n        isolated+=s\n\
+        \    for piece in pieces:\n        assert int.from_bytes(piece[4:6],'big')==tile\n\
+        \        isolated+=piece[:4]+b'\\0\\0'+piece[6:]\n    isolated+=b'\\xff\\\
+        xd9'\n    with Image.open(io.BytesIO(isolated)) as im:\n        return bounds,im.convert('RGB')\n\
+        \ndef covered(ranges):\n    spans=[]\n    for a,b in sorted(ranges):\n   \
+        \     if spans and spans[-1][1]==a:\n            spans[-1]=(spans[-1][0],b)\n\
+        \        else:\n            assert not spans or spans[-1][1]<=a\n        \
+        \    spans.append((a,b))\n    return spans\n\nasync def run(server):\n   \
+        \ main,segments,tiles=layout()\n    physical=[main]+sorted(p for parts in\
+        \ tiles.values() for p in parts)\n    keys={p:f'parts/{i}/c/0' for i,p in\
+        \ enumerate(physical)}\n    url=f'http://127.0.0.1:{server.server_port}/'\n\
+        \    cfg=ic.RepositoryConfig.default()\n    cfg.set_virtual_chunk_container(ic.VirtualChunkContainer(url,ic.http_store({'allow_http':'true'})))\n\
+        \    repo=ic.Repository.open_or_create(storage=ic.in_memory_storage(),config=cfg,authorize_virtual_chunk_access={url:ic.credentials.HttpAccess})\n\
+        \    ses=repo.writable_session('main')\n    root=zarr.group(store=ses.store)\n\
+        \    for (a,b),key in keys.items():\n        root.create_array(key.rsplit('/c/',1)[0],shape=(b-a,),chunks=(b-a,),dtype='u1',compressors=None)\n\
+        \        ses.store.set_virtual_ref(key,url+'small_world.jp2',offset=a,length=b-a,checksum=etag,validate_container=True)\n\
+        \    snap=ses.commit('Record physical JPEG 2000 tile-part extents')\n    store=repo.readonly_session(snapshot_id=snap).store\n\
+        \    prototype=default_buffer_prototype()\n    async def read(parts,lo=0,hi=None):\n\
+        \        # Map a logical half-open byte request to only intersecting physical\
+        \ references.\n        end=sum(b-a for a,b in parts);hi=end if hi is None\
+        \ else hi\n        assert 0<=lo<=hi<=end\n        offset=0;requests=[];expected=[]\n\
+        \        for a,b in parts:\n            length=b-a\n            l=max(lo-offset,0);r=min(hi-offset,length);offset+=length\n\
+        \            if l<r:\n                requests.append((keys[a,b],RangeByteRequest(l,r)))\n\
+        \                expected.append((a+l,a+r))\n        if not requests:return\
+        \ [],[]\n        values=await store.get_partial_values(prototype,requests)\n\
+        \        assert all(v is not None for v in values)\n        return [v.to_bytes()\
+        \ for v in values],expected\n    with Image.open(io.BytesIO(raw)) as im: full=im.convert('RGB')\n\
+        \    header=(await read([main]))[0][0]\n    results=[]\n    for tile,parts\
+        \ in tiles.items():\n        server.events.clear()\n        values,expected=await\
+        \ read(parts)\n        gets=[(a,b) for verb,a,b,cond,r in server.events if\
+        \ verb=='GET' and r]\n        assert covered(gets)==covered(expected),server.events\n\
+        \        request_count=len(gets)\n        assert all(cond and cond.strip('\"\
+        ')==etag.strip('\"') for verb,a,b,cond,r in server.events if verb=='GET')\n\
+        \        assert all(verb!='GET' or r for verb,a,b,cond,r in server.events)\n\
+        \        bounds,image=decode_tile(header,segments,main[0],tile,values)\n \
+        \       reference=full.crop(bounds);assert image.size==reference.size and\
+        \ image.tobytes()==reference.tobytes()\n        end1=parts[0][1]-parts[0][0];server.events.clear()\n\
+        \        sliced,spans=await read(parts,end1-2,end1+3)\n        assert b''.join(sliced)==b''.join(values)[end1-2:end1+3]\n\
+        \        assert covered([(a,b) for m,a,b,_,_ in server.events if m=='GET'])==covered(spans)\n\
+        \        assert await read(parts,0,0)==([],[])\n        results.append(dict(tile=tile,pixels=image.size,http_gets=request_count,ranges=expected,requested=sum(b-a\
+        \ for a,b in expected),skipped=expected[-1][1]-expected[0][0]-sum(b-a for\
+        \ a,b in expected),sha256=hashlib.sha256(image.tobytes()).hexdigest(),cross_boundary=spans))\n\
+        \    server.etag='\"changed\"';server.events.clear()\n    try:\n        await\
+        \ store.get(keys[tiles[0][0]],prototype,RangeByteRequest(0,1))\n    except\
+        \ ic.IcechunkError as err:\n        individual=type(err).__name__\n      \
+        \  assert 'has changed' in str(err).lower() or '412' in str(err),str(err)\n\
+        \    else:raise AssertionError('Individual read did not reject a changed object')\n\
+        \    server.events.clear()\n    try:await read(tiles[0],0,1)\n    except (ic.IcechunkError,TypeError)\
+        \ as err:\n        mismatch=type(err).__name__\n        assert mismatch==(individual\
+        \ if os.environ.get('CHECK_PATCHED_ICECHUNK') else 'TypeError'),str(err)\n\
+        \        assert server.events and all(cond and cond.strip('\"')==etag.strip('\"\
+        ') for method,_,_,cond,_ in server.events if method=='GET')\n    else:raise\
+        \ AssertionError('Batched read did not reject a changed object')\n    return\
+        \ dict(icechunk=ic.__version__,file_bytes=len(raw),header=main,tiles=results,individual_etag_error=individual,batch_etag_error=mismatch)\n\
+        if __name__=='__main__':\n    with ThreadingHTTPServer(('127.0.0.1',0),Server)\
+        \ as server:\n        server.etag=etag;server.events=[]\n        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()\n\
+        \        try:print(json.dumps(asyncio.run(run(server)),indent=2))\n      \
+        \  finally:server.shutdown();thread.join()\nTASK_FILE\ncurl -fsSL https://raw.githubusercontent.com/uclouvain/openjpeg-data/39524bd3a601d90ed8e0177559400d23945f96a9/input/nonregression/small_world_non_consecutive_tilepart_tlm.jp2\
+        \ -o /tmp/small_world.jp2\npython /tmp/jpeg2000_ranges.py\n"
+    - name: Build the patched native extension and retest the same JPEG 2000 object
+      run: 'echo ZGlmZiAtLWdpdCBhL2ljZWNodW5rLXB5dGhvbi9weXRob24vaWNlY2h1bmsvX2ljZWNodW5rX3B5dGhvbi5weWkgYi9pY2VjaHVuay1weXRob24vcHl0aG9uL2ljZWNodW5rL19pY2VjaHVua19weXRob24ucHlpCmluZGV4IGQwZTBmNDEuLjZkNDcxNjEgMTAwNjQ0Ci0tLSBhL2ljZWNodW5rLXB5dGhvbi9weXRob24vaWNlY2h1bmsvX2ljZWNodW5rX3B5dGhvbi5weWkKKysrIGIvaWNlY2h1bmstcHl0aG9uL3B5dGhvbi9pY2VjaHVuay9faWNlY2h1bmtfcHl0aG9uLnB5aQpAQCAtMjc3Nyw3ICsyNzc3LDcgQEAgY2xhc3MgUHlTdG9yZToKICAgICApIC0+IGJ5dGVzOiAuLi4KICAgICBhc3luYyBkZWYgZ2V0X3BhcnRpYWxfdmFsdWVzKAogICAgICAgICBzZWxmLCBrZXlfcmFuZ2VzOiBsaXN0W3R1cGxlW3N0ciwgdHVwbGVbaW50IHwgTm9uZSwgaW50IHwgTm9uZV1dXQotICAgICkgLT4gbGlzdFtieXRlc106IC4uLgorICAgICkgLT4gbGlzdFtieXRlcyB8IE5vbmVdOiAuLi4KICAgICBhc3luYyBkZWYgZXhpc3RzKHNlbGYsIGtleTogc3RyKSAtPiBib29sOiAuLi4KICAgICBAcHJvcGVydHkKICAgICBkZWYgc3VwcG9ydHNfd3JpdGVzKHNlbGYpIC0+IGJvb2w6IC4uLgpkaWZmIC0tZ2l0IGEvaWNlY2h1bmstcHl0aG9uL3B5dGhvbi9pY2VjaHVuay9zdG9yZS5weSBiL2ljZWNodW5rLXB5dGhvbi9weXRob24vaWNlY2h1bmsvc3RvcmUucHkKaW5kZXggNDhjYjg5ZC4uOWNiZTVhMyAxMDA2NDQKLS0tIGEvaWNlY2h1bmstcHl0aG9uL3B5dGhvbi9pY2VjaHVuay9zdG9yZS5weQorKysgYi9pY2VjaHVuay1weXRob24vcHl0aG9uL2ljZWNodW5rL3N0b3JlLnB5CkBAIC0xOTgsNyArMTk4LDcgQEAgY2xhc3MgSWNlY2h1bmtTdG9yZShTdG9yZSwgU3luY01peGluKToKICAgICAgICAgIyB0byBhIGxpc3QgaGVyZSBmaXJzdC4gUG9zc2libGUgb3Bwb3J0dW5pdHkgZm9yIG9wdGltaXphdGlvbi4KICAgICAgICAgcmFuZ2VzID0gWyhrWzBdLCBfYnl0ZV9yZXF1ZXN0X3RvX3R1cGxlKGtbMV0pKSBmb3IgayBpbiBrZXlfcmFuZ2VzXQogICAgICAgICByZXN1bHQgPSBhd2FpdCBzZWxmLl9zdG9yZS5nZXRfcGFydGlhbF92YWx1ZXMobGlzdChyYW5nZXMpKQotICAgICAgICByZXR1cm4gW3Byb3RvdHlwZS5idWZmZXIuZnJvbV9ieXRlcyhyKSBmb3IgciBpbiByZXN1bHRdCisgICAgICAgIHJldHVybiBbcHJvdG90eXBlLmJ1ZmZlci5mcm9tX2J5dGVzKHIpIGlmIHIgaXMgbm90IE5vbmUgZWxzZSBOb25lIGZvciByIGluIHJlc3VsdF0KIAogICAgIGFzeW5jIGRlZiBleGlzdHMoc2VsZiwga2V5OiBzdHIpIC0+IGJvb2w6CiAgICAgICAgICIiIkNoZWNrIGlmIGEga2V5IGV4aXN0cyBpbiB0aGUgc3RvcmUuCmRpZmYgLS1naXQgYS9pY2VjaHVuay1weXRob24vc3JjL3N0b3JlLnJzIGIvaWNlY2h1bmstcHl0aG9uL3NyYy9zdG9yZS5ycwppbmRleCA0ZjZiMjZjLi5jNjdkYzc3IDEwMDY0NAotLS0gYS9pY2VjaHVuay1weXRob24vc3JjL3N0b3JlLnJzCisrKyBiL2ljZWNodW5rLXB5dGhvbi9zcmMvc3RvcmUucnMKQEAgLTI3NSwxNSArMjc1LDE1IEBAIGltcGwgUHlTdG9yZSB7CiAgICAgICAgICAgICAgICAgLmF3YWl0CiAgICAgICAgICAgICAgICAgLm1hcF9lcnIoUHlJY2VjaHVua1N0b3JlRXJyb3I6OlN0b3JlRXJyb3IpPzsKIAotICAgICAgICAgICAgLy8gRklYTUU6IHRoaXMgcHJvY2Vzc2luZyBpcyBoaWRpbmcgZXJyb3JzIGluIGNlcnRhaW4ga2V5cwotICAgICAgICAgICAgbGV0IHJlc3VsdCA9IHBhcnRpYWxfdmFsdWVzX3N0cmVhbQorICAgICAgICAgICAgbGV0IHZhbHVlcyA9IHBhcnRpYWxfdmFsdWVzX3N0cmVhbQogICAgICAgICAgICAgICAgIC5pbnRvX2l0ZXIoKQotICAgICAgICAgICAgICAgIC8vIElmIHdlIHdhbnQgdG8gZXJyb3IgaW5zdGVhZCBvZiByZXR1cm5pbmcgTm9uZSB3ZSBjYW4gY29sbGVjdCBpbnRvCi0gICAgICAgICAgICAgICAgLy8gYSBSZXN1bHQ8VmVjPF8+LCBfPiBhbmQgc2hvcnQgY2lyY3VpdAotICAgICAgICAgICAgICAgIC5tYXAofHh8IHgubWFwKFZlYzo6ZnJvbSkub2soKSkKLSAgICAgICAgICAgICAgICAuY29sbGVjdDo6PFZlYzxfPj4oKTsKLQotICAgICAgICAgICAgT2socmVzdWx0KQorICAgICAgICAgICAgICAgIC5tYXAofHZhbHVlfCBtYXRjaCB2YWx1ZSB7CisgICAgICAgICAgICAgICAgICAgIE9rKGRhdGEpID0+IE9rKFNvbWUoUHlCeXRlczo6bmV3KGRhdGEpKSksCisgICAgICAgICAgICAgICAgICAgIEVycihTdG9yZUVycm9yIHsga2luZDogU3RvcmVFcnJvcktpbmQ6Ok5vdEZvdW5kKF8pLCAuLiB9KSA9PiBPayhOb25lKSwKKyAgICAgICAgICAgICAgICAgICAgRXJyKGVycikgPT4gRXJyKFB5SWNlY2h1bmtTdG9yZUVycm9yOjpTdG9yZUVycm9yKGVycikpLAorICAgICAgICAgICAgICAgIH0pCisgICAgICAgICAgICAgICAgLmNvbGxlY3Q6OjxSZXN1bHQ8VmVjPF8+LCBfPj4oKT87CisgICAgICAgICAgICBPayh2YWx1ZXMpCiAgICAgICAgIH0pCiAgICAgfQogCmRpZmYgLS1naXQgYS9pY2VjaHVuay1weXRob24vdGVzdHMvdGVzdF9zdG9yZS5weSBiL2ljZWNodW5rLXB5dGhvbi90ZXN0cy90ZXN0X3N0b3JlLnB5CmluZGV4IDQ3NWFiODYuLmFiMDEwMDMgMTAwNjQ0Ci0tLSBhL2ljZWNodW5rLXB5dGhvbi90ZXN0cy90ZXN0X3N0b3JlLnB5CisrKyBiL2ljZWNodW5rLXB5dGhvbi90ZXN0cy90ZXN0X3N0b3JlLnB5CkBAIC0xLDE1ICsxLDM0IEBACiBpbXBvcnQganNvbgogCiBpbXBvcnQgbnVtcHkgYXMgbnAKK2ltcG9ydCBweXRlc3QKIAogaW1wb3J0IGljZWNodW5rIGFzIGljCiBpbXBvcnQgemFycgogZnJvbSB0ZXN0cy5jb25mdGVzdCBpbXBvcnQgcGFyc2VfcmVwbworZnJvbSB6YXJyLmFiYy5zdG9yZSBpbXBvcnQgUmFuZ2VCeXRlUmVxdWVzdAogZnJvbSB6YXJyLmNvcmUuYnVmZmVyIGltcG9ydCBjcHUsIGRlZmF1bHRfYnVmZmVyX3Byb3RvdHlwZQogCiBybmcgPSBucC5yYW5kb20uZGVmYXVsdF9ybmcoc2VlZD0xMjM0NSkKIAogCithc3luYyBkZWYgdGVzdF9wYXJ0aWFsX3ZhbHVlc193aXRoX21pc3Npbmdfa2V5KGFueV9zcGVjX3ZlcnNpb246IGludCB8IE5vbmUpIC0+IE5vbmU6CisgICAgcmVwbyA9IHBhcnNlX3JlcG8oIm1lbW9yeSIsICJ0ZXN0IiwgYW55X3NwZWNfdmVyc2lvbikKKyAgICBzdG9yZSA9IHJlcG8ud3JpdGFibGVfc2Vzc2lvbigibWFpbiIpLnN0b3JlCisgICAgemFyci5jcmVhdGVfYXJyYXkoc3RvcmUsIHNoYXBlPSgxMiwpLCBjaHVua3M9KDYsKSwgZHR5cGU9InUxIiwgY29tcHJlc3NvcnM9Tm9uZSkKKyAgICBwcm90b3R5cGUgPSBkZWZhdWx0X2J1ZmZlcl9wcm90b3R5cGUoKQorICAgIGF3YWl0IHN0b3JlLnNldCgiYy8wIiwgcHJvdG90eXBlLmJ1ZmZlci5mcm9tX2J5dGVzKGIiYWJjZGVmIikpCisKKyAgICB2YWx1ZXMgPSBhd2FpdCBzdG9yZS5nZXRfcGFydGlhbF92YWx1ZXMoCisgICAgICAgIHByb3RvdHlwZSwKKyAgICAgICAgWygiYy8wIiwgUmFuZ2VCeXRlUmVxdWVzdCgyLCA0KSksICgiYy8xIiwgTm9uZSksICgiYy8wIiwgTm9uZSldLAorICAgICkKKyAgICBhc3NlcnQgW3YudG9fYnl0ZXMoKSBpZiB2IGlzIG5vdCBOb25lIGVsc2UgTm9uZSBmb3IgdiBpbiB2YWx1ZXNdID09IFtiImNkIiwgTm9uZSwgYiJhYmNkZWYiXQorCisgICAgd2l0aCBweXRlc3QucmFpc2VzKGljLkludmFsaWRJbnB1dEVycm9yKToKKyAgICAgICAgYXdhaXQgc3RvcmUuZ2V0X3BhcnRpYWxfdmFsdWVzKHByb3RvdHlwZSwgWygiYy8xIiwgTm9uZSksICgiYmFkL2tleSIsIE5vbmUpXSkKKworCiBhc3luYyBkZWYgdGVzdF9zdG9yZV9jbGVhcl9tZXRhZGF0YV9saXN0KGFueV9zcGVjX3ZlcnNpb246IGludCB8IE5vbmUpIC0+IE5vbmU6CiAgICAgcmVwbyA9IHBhcnNlX3JlcG8oIm1lbW9yeSIsICJ0ZXN0IiwgYW55X3NwZWNfdmVyc2lvbikKICAgICBzZXNzaW9uID0gcmVwby53cml0YWJsZV9zZXNzaW9uKCJtYWluIikK
+        | base64 -d | git apply -
+
+        cd icechunk-python
+
+        maturin build --profile dev --interpreter python --out /tmp/wheels
+
+        python -m pip install --no-deps --force-reinstall /tmp/wheels/*.whl
+
+        cd /tmp
+
+        CHECK_PATCHED_ICECHUNK=1 python jpeg2000_ranges.py
+
+        cd "$GITHUB_WORKSPACE/icechunk-python"
+
+        python -m pytest -q -o asyncio_mode=auto tests/test_store.py -k partial_values_with_missing_key'
+  ride-time:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: PyVRP/PyVRP
+        ref: b9225e43ec51cc1f41fddeb75e7ba22b8440cf07
+        persist-credentials: false
+    - *id001
+    - name: Exhaustive schedules and full constrained relocation search
+      run: "mkdir -p /tmp/route/frontier-selection-20261121/pyvrp/tests/data /tmp/route/prototype\n\
+        cp tests/data/lrc206.vrp /tmp/route/frontier-selection-20261121/pyvrp/tests/data/\n\
+        cat > /tmp/route/frontier-selection-20261121/ride_time_oracle.py <<'TASK_FILE'\n\
+        \"\"\"Fixed-order shipment ride-time feasibility, checked against exhaustive\
+        \ schedules.\"\"\"\n\nfrom itertools import product\nfrom random import Random\n\
+        from pyvrp import Model\n\n\ndef feasible(stops, travel, limits):\n    \"\"\
+        \"Return a feasible service-start schedule, or None for incompatible bounds.\"\
+        \"\"\n    source = len(stops)\n    edges = []\n    for i, stop in enumerate(stops):\n\
+        \        edges.extend(((source, i, stop.tw_late), (i, source, -stop.tw_early)))\n\
+        \        if i < len(travel):\n            edges.append((i + 1, i, -stop.service_duration\
+        \ - travel[i]))\n    for pickup, delivery, cap in limits:\n        edges.append((pickup,\
+        \ delivery, stops[pickup].service_duration + cap))\n    times = [0] * (source\
+        \ + 1)\n    for _ in times:\n        changed = False\n        for u, v, weight\
+        \ in edges:\n            bound = times[u] + weight\n            if times[v]\
+        \ > bound:\n                times[v] = bound\n                changed = True\n\
+        \        if not changed:\n            return [t - times[source] for t in times[:-1]]\n\
+        \    return None\n\n\ndef valid(times, stops, travel, limits):\n    return\
+        \ (\n        all(s.tw_early <= t <= s.tw_late for s, t in zip(stops, times))\n\
+        \        and all(\n            times[i] + stops[i].service_duration + w <=\
+        \ times[i + 1]\n            for i, w in enumerate(travel)\n        )\n   \
+        \     and all(\n            times[d] - times[p] - stops[p].service_duration\
+        \ <= cap\n            for p, d, cap in limits\n        )\n    )\n\n\ndef shipment(model,\
+        \ loc, windows, service=0):\n    (pe, pl), (de, dl) = windows\n    return\
+        \ model.add_shipment(\n        loc,\n        loc,\n        pickup_tw_early=pe,\n\
+        \        pickup_tw_late=pl,\n        pickup_service_duration=service,\n  \
+        \      delivery_tw_early=de,\n        delivery_tw_late=dl,\n    )\n\n\ndef\
+        \ main():\n    model = Model()\n    loc = model.add_location(0, 0)\n    trip\
+        \ = shipment(model, loc, ((0, 8), (10, 10)))\n    stops = [trip.pickup, trip.delivery]\n\
+        \    schedule = feasible(stops, [2], [(0, 1, 3)])\n    assert schedule is\
+        \ not None and valid(schedule, stops, [2], [(0, 1, 3)])\n    assert not valid([0,\
+        \ 10], stops, [2], [(0, 1, 3)])\n    assert feasible(stops, [2], [(0, 1, 1)])\
+        \ is None\n    rng = Random(3167)\n    feasible_cases = 0\n    for _ in range(1200):\n\
+        \n        def window():\n            first = rng.randrange(6)\n          \
+        \  return first, rng.randint(first, 9)\n\n        def random_shipment():\n\
+        \            pickup = window()\n            delivery = window()\n        \
+        \    while delivery[1] < pickup[0]:\n                delivery = window()\n\
+        \            return shipment(model, loc, (pickup, delivery), rng.randrange(2))\n\
+        \n        a = random_shipment()\n        b = random_shipment()\n        stops\
+        \ = [a.pickup, b.pickup, a.delivery, b.delivery]\n        travel = [rng.randrange(3)\
+        \ for _ in range(3)]\n        limits = [(0, 2, rng.randrange(7)), (1, 3, rng.randrange(7))]\n\
+        \        candidate = feasible(stops, travel, limits)\n        possible = any(\n\
+        \            valid(t, stops, travel, limits)\n            for t in product(*(range(s.tw_early,\
+        \ s.tw_late + 1) for s in stops))\n        )\n        assert possible == (candidate\
+        \ is not None)\n        if possible:\n            assert valid(candidate,\
+        \ stops, travel, limits)\n            feasible_cases += 1\n    print(\n  \
+        \      f\"PyVRP shipment inputs: waiting example {schedule}; 1200/1200 agree\
+        \ with complete enumeration ({feasible_cases} feasible, {1200-feasible_cases}\
+        \ infeasible).\"\n    )\n\n\nif __name__ == \"__main__\":\n    main()\nTASK_FILE\n\
+        cat > /tmp/route/prototype/ride_time.py <<'TASK_FILE'\n\"\"\"Exact service-start\
+        \ feasibility for fixed-order pickup/delivery route edits.\"\"\"\nfrom dataclasses\
+        \ import dataclass\nfrom heapq import heappop, heappush\nfrom itertools import\
+        \ chain, pairwise\n\n\n@dataclass\nclass Schedule:\n    order: tuple\n   \
+        \ previous: list  # backward travel constraint indexed by destination stop\n\
+        \    potential: list\n\n\nclass RouteBounds:\n    def __init__(self, stops,\
+        \ duration, limits):\n        self.stops = stops\n        self.duration =\
+        \ duration\n        self.limits = limits\n        origin = len(stops)\n  \
+        \      self.static = [[] for _ in range(origin + 1)]\n        for node, stop\
+        \ in enumerate(stops):\n            self.static[origin].append((node, stop.tw_late))\n\
+        \            self.static[node].append((origin, -stop.tw_early))\n        for\
+        \ pickup, delivery, cap in limits:\n            self.static[pickup].append((delivery,\
+        \ stops[pickup].service_duration + cap))\n\n    def edge(self, first, second):\n\
+        \        return (first, -self.stops[first].service_duration - self.duration[first][second])\n\
+        \n    def full(self, order):\n        # Rebuild all difference constraints.\
+        \ A relaxation on pass |V| implies a negative cycle.\n        n = len(self.static)\n\
+        \        edges = [(u, v, w) for u, bounds in enumerate(self.static) for v,\
+        \ w in bounds]\n        previous = [None] * n\n        for a, b in reversed(list(pairwise(order))):\n\
+        \            previous[b] = self.edge(a, b)\n            edges.append((b, *previous[b]))\n\
+        \        pot = [0] * n\n        for _ in range(n):\n            changed =\
+        \ False\n            for u, v, weight in edges:\n                if pot[u]\
+        \ + weight < pot[v]:\n                    pot[v] = pot[u] + weight\n     \
+        \               changed = True\n            if not changed:\n            \
+        \    return Schedule(order, previous, pot)\n        return None\n\n    def\
+        \ edit(self, old, order):\n        \"\"\"Keep the feasible potential after\
+        \ cuts, then repair only violated new arcs.\"\"\"\n        previous = old.previous.copy()\n\
+        \        potential = old.potential.copy()\n        if order:\n           \
+        \ previous[order[0]] = None\n        added = []\n        for a, b in pairwise(order):\n\
+        \            if previous[b] is None or previous[b][0] != a:\n            \
+        \    previous[b] = None\n                added.append((b, self.edge(a, b)))\n\
+        \        for u, (v, weight) in added:\n            deficit = potential[v]\
+        \ - potential[u] - weight\n            if deficit > 0:\n                #\
+        \ Before this insertion all reduced costs are nonnegative.\n             \
+        \   # A return path shorter than deficit closes a negative cycle.\n      \
+        \          distances = {v: 0}\n                queue = [(0, v)]\n        \
+        \        while queue:\n                    dist, node = heappop(queue)\n \
+        \                   if dist != distances[node]:\n                        continue\n\
+        \                    if node == u:\n                        return None\n\
+        \                    arc = previous[node]\n                    for other,\
+        \ cost in chain(self.static[node], (arc,) if arc else ()):\n             \
+        \           value = dist + cost + potential[node] - potential[other]\n   \
+        \                     if value < distances.get(other, deficit):\n        \
+        \                    distances[other] = value\n                          \
+        \  heappush(queue, (value, other))\n                for node, dist in distances.items():\n\
+        \                    potential[node] -= deficit - dist\n            previous[u]\
+        \ = (v, weight)\n        return Schedule(order, previous, potential)\n\n \
+        \   def valid(self, state):\n        p = state.potential\n        return all(p[v]\
+        \ <= p[u] + w for u, arcs in enumerate(self.static) for v,w in arcs) and all(\n\
+        \            p[a] <= p[b] + self.edge(a,b)[1] for a,b in pairwise(state.order)\n\
+        \        )\nTASK_FILE\ncat > /tmp/route/prototype/test_ride_time.py <<'TASK_FILE'\n\
+        \"\"\"Replay seed 3167 exactly; then try all precedence-preserving permutations\
+        \ and edits.\"\"\"\nimport sys,json\nfrom pathlib import Path\nfrom random\
+        \ import Random\nfrom itertools import permutations,product,pairwise\nsys.path.insert(0,str(Path(__file__).resolve().parent.parent/'frontier-selection-20261121'))\n\
+        from ride_time_oracle import feasible, shipment, valid\nfrom ride_time import\
+        \ RouteBounds\nfrom pyvrp import Model\n\ndef run():\n    rng=Random(3167)\n\
+        \    model=Model(); loc=model.add_location(0,0)\n    orders=[o for o in permutations(range(4))\
+        \ if o.index(0)<o.index(2) and o.index(1)<o.index(3)]\n    original=tuple(range(4));\
+        \ counts=dict(original=0, feasible_original=0, orders=0, moves=0, accepted=0)\n\
+        \    for case in range(1200):\n        def window():\n            e=rng.randrange(6);return\
+        \ e,rng.randint(e,9)\n        def request():\n            p=window(); d=window()\n\
+        \            while d[1]<p[0]:d=window()\n            return shipment(model,loc,(p,d),rng.randrange(2))\n\
+        \        a,b=request(),request()\n        stops=[a.pickup,b.pickup,a.delivery,b.delivery]\n\
+        \        t=[rng.randrange(3) for _ in range(3)]\n        limits=[(0,2,rng.randrange(7)),(1,3,rng.randrange(7))]\n\
+        \        other=Random(case+721); dur=[[other.randrange(3) for _ in stops]\
+        \ for _ in stops]\n        for u,x in enumerate(t):dur[u][u+1]=x\n       \
+        \ graph=RouteBounds(stops,dur,limits)\n        base=graph.full(())\n     \
+        \   # Even without travel, windows and caps may already contradict each other.\n\
+        \        states=[]\n        for o in orders:\n            steps=[stops[i]\
+        \ for i in o]; travel=[dur[i][j] for i,j in pairwise(o)]\n            lim=[(o.index(i),o.index(j),v)\
+        \ for i,j,v in limits]\n            possible=any(valid(s,steps,travel,lim)\
+        \ for s in product(*(range(z.tw_early,z.tw_late+1) for z in steps)))\n   \
+        \         full=graph.full(o); incr=graph.edit(base,o) if base else None\n\
+        \            assert possible==(feasible(steps,travel,lim) is not None)==bool(full)==bool(incr)\n\
+        \            if full:assert graph.valid(full) and graph.valid(incr)\n    \
+        \        states.append((o,incr))\n            counts['orders']+=1\n      \
+        \      if o==original:\n                counts['original']+=1;counts['feasible_original']+=possible\n\
+        \        for _, parent in states:\n            if not parent:continue\n  \
+        \          prior=(parent.potential.copy(),parent.previous.copy())\n      \
+        \      for o,target in states:\n                got=graph.edit(parent,o)\n\
+        \                assert bool(got)==bool(target)\n                if got:assert\
+        \ graph.valid(got)\n                counts['moves']+=1;counts['accepted']+=bool(got)\n\
+        \            assert prior==(parent.potential,parent.previous)\n    return\
+        \ counts\nif __name__=='__main__':print(json.dumps(run()))\nTASK_FILE\ncat\
+        \ > /tmp/route/prototype/search_benchmark.py <<'TASK_FILE'\n\"\"\"Time a complete\
+        \ constrained intra-route search on a PyVRP PDPTW benchmark.\"\"\"\nfrom dataclasses\
+        \ import dataclass\nfrom itertools import pairwise\nimport json,random,statistics,sys,time\n\
+        from pathlib import Path\nimport pyvrp\nfrom pyvrp.stop import MaxIterations\n\
+        from ride_time import RouteBounds\n\n@dataclass\nclass Stop:\n    tw_early:int\n\
+        \    tw_late:int\n    service_duration:int\n\ndef build(data, route):\n  \
+        \  timeline=route.schedule()\n    refs=[]; pickups={}; deliveries={}; loads=[]\n\
+        \    for i,a in enumerate(timeline):\n        if a.is_depot():\n         \
+        \   refs.append(data.depot(a.idx));loads.append(0)\n        else:\n      \
+        \      job=data.shipment(a.idx)\n            if a.is_pickup():pickups[a.idx]=i;\
+        \ refs.append(job.pickup)\n            else:deliveries[a.idx]=i; refs.append(job.delivery)\n\
+        \            loads.append(job.amount[0]*(1 if a.is_pickup() else -1))\n  \
+        \  loc=[s.location for s in refs]; vehicle=data.vehicle_type(route.vehicle_type())\n\
+        \    duration=data.duration_matrix(vehicle.profile);distance=data.distance_matrix(vehicle.profile)\n\
+        \    stops=[Stop(s.tw_early,s.tw_late,s.service_duration) for s in refs]\n\
+        \    # These benchmark vehicles have no extra shift/duration restriction beyond\
+        \ the depot window.\n    stops[0].tw_early=max(stops[0].tw_early,vehicle.tw_early)\n\
+        \    stops[-1].tw_late=min(stops[-1].tw_late,vehicle.tw_late)\n    lim=[]\n\
+        \    for job,p in pickups.items():\n        d=deliveries[job]\n        observed=timeline[d].start_time-timeline[p].end_time\n\
+        \        lim.append((p,d,observed+max(3,observed//10)))\n    graph=RouteBounds(stops,[[int(duration[a,b])\
+        \ for b in loc] for a in loc],lim)\n    return graph,[[int(distance[a,b])\
+        \ for b in loc] for a in loc],loads,vehicle.capacity[0]\n\ndef admissible(order,graph,loads,cap):\n\
+        \    positions=[0]*len(order)\n    current=0\n    for k,node in enumerate(order):\n\
+        \        positions[node]=k\n        current+=loads[node]\n        if current<0\
+        \ or current>cap:return False\n    return all(positions[p]<positions[d] for\
+        \ p,d,_ in graph.limits)\n\ndef distance(cost,order):\n    return sum(cost[a][b]\
+        \ for a,b in pairwise(order))\n\ndef neighbors(order):\n    # Enumerate all\
+        \ single-stop relocations between the two fixed depot visits.\n    for i in\
+        \ range(1,len(order)-1):\n        node=order[i];rest=order[:i]+order[i+1:]\n\
+        \        for j in range(1,len(rest)):\n            if j==i or j==i-1:continue\
+        \  # adjacent swaps occur twice\n            yield rest[:j]+(node,)+rest[j:]\n\
+        \ndef prepare(data,sol,seed):\n    starts=[]\n    for ri,route in enumerate(sol.routes()):\n\
+        \        graph,cost,loads,cap=build(data,route)\n        order=tuple(range(len(graph.stops)))\n\
+        \        state=graph.full(order)\n        assert state and graph.valid(state)\n\
+        \        # Perturb a feasible incumbent to give both implementations real\
+        \ improving moves.\n        rng=random.Random(1000*seed+ri)\n        for _\
+        \ in range(4):\n            candidates=list(neighbors(order));rng.shuffle(candidates)\n\
+        \            for cand in candidates:\n                if admissible(cand,graph,loads,cap):\n\
+        \                    trial=graph.edit(state,cand)\n                    if\
+        \ trial:\n                        assert graph.valid(trial)\n            \
+        \            state=trial;order=cand;break\n        starts.append((graph,cost,loads,cap,order))\n\
+        \    return starts\n\ndef search(starts,mode,profile=False):\n    candidates=checks=accepted=rejects=checker_ns=total_cost=0\n\
+        \    final=[]\n    for graph,cost,loads,cap,order in starts:\n        current=graph.full(order)\n\
+        \        best_cost=distance(cost,order)\n        while True:\n           \
+        \ winner=None\n            start_cost=best_cost\n            for choice in\
+        \ neighbors(order):\n                candidates+=1\n                score=distance(cost,choice)\n\
+        \                if score>=best_cost or not admissible(choice,graph,loads,cap):continue\n\
+        \                checks+=1\n                if profile:t=time.perf_counter_ns()\n\
+        \                trial=graph.edit(current,choice) if mode=='incremental' else\
+        \ graph.full(choice)\n                if profile:checker_ns+=time.perf_counter_ns()-t\n\
+        \                if trial is None:rejects+=1;continue\n                winner=trial;best_cost=score\n\
+        \            if winner is None:break\n            assert best_cost<start_cost\n\
+        \            current=winner;order=current.order;accepted+=1\n        assert\
+        \ graph.valid(current)\n        final.append(order);total_cost+=best_cost\n\
+        \    return (candidates,checks,rejects,accepted,total_cost,final),checker_ns\n\
+        \ndef main():\n    fn=Path(__file__).resolve().parent.parent/'frontier-selection-20261121/pyvrp/tests/data/lrc206.vrp'\n\
+        \    data=pyvrp.read(fn)\n    starts=[];native=[];start_cost=0\n    for seed\
+        \ in [2,7,17]:\n        t=time.perf_counter()\n        result=pyvrp.solve(data,MaxIterations(35),seed=seed,collect_stats=False)\n\
+        \        native.append((seed,round(time.perf_counter()-t,4),result.cost()))\n\
+        \        assert result.best.is_feasible()\n        starts+=prepare(data,result.best,seed)\n\
+        \    start_cost=sum(distance(cost,order) for _,cost,_,_,order in starts)\n\
+        \    times={m:[] for m in ('full','incremental')};profile={}\n    ref,_=search(starts,'full')\n\
+        \    for m in times:\n        stats,ns=search(starts,m,True); assert stats==ref\n\
+        \        profile[m]=round(ns/ref[1]/1000,2)\n    for i in range(7):\n    \
+        \    for mode in list(times)[::1 if i%2==0 else -1]:\n            t=time.perf_counter();out,_=search(starts,mode);times[mode].append(time.perf_counter()-t)\n\
+        \            assert out==ref\n    print(json.dumps(dict(instance=fn.name,seeds=native,starts=len(starts),initial_distance=start_cost,candidates=ref[0],checks=ref[1],rejected=ref[2],accepted_moves=ref[3],final_distance=ref[4],microseconds_per_check=profile,median_seconds={m:round(statistics.median(t),4)\
+        \ for m,t in times.items()},repetitions_s=times),indent=2))\nif __name__=='__main__':\
+        \ main()\nTASK_FILE\npython -m pip install pyvrp==0.14.1\ncd /tmp/route/prototype\n\
+        python test_ride_time.py\npython search_benchmark.py"
