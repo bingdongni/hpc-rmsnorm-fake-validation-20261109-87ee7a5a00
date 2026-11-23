@@ -1,45 +1,89 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: Validate DuckDB Spatial OSM codec linkage
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
-    env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+  native:
+    name: DuckDB pinned Zstandard, native OSM SQL and Monaco data
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: bingdongni/duckdb-spatial
+        ref: 82ef4476c8eced10a79a0211fc48dd1abe258a8b
+        persist-credentials: false
+    - name: Reproduce parent compile error and test corrected decoder
+      run: "echo ZGlmZiAtLWdpdCBhL0NNYWtlTGlzdHMudHh0IGIvQ01ha2VMaXN0cy50eHQKaW5kZXggM2Q4MDY5ZC4uMjQyNDc4ZSAxMDA2NDQKLS0tIGEvQ01ha2VMaXN0cy50eHQKKysrIGIvQ01ha2VMaXN0cy50eHQKQEAgLTUyLDcgKzUyLDYgQEAgc2V0KFpMSUJfVVNFX1NUQVRJQ19MSUJTIE9OKQogc2V0KE9QRU5TU0xfVVNFX1NUQVRJQ19MSUJTIE9OKQogZmluZF9wYWNrYWdlKFpMSUIgUkVRVUlSRUQpCiBmaW5kX3BhY2thZ2UobHo0IENPTkZJRyBSRVFVSVJFRCkKLWZpbmRfcGFja2FnZSh6c3RkIENPTkZJRyBSRVFVSVJFRCkKIGZpbmRfcGFja2FnZShQUk9KIENPTkZJRyBSRVFVSVJFRCkKIGZpbmRfcGFja2FnZShHREFMIENPTkZJRyBSRVFVSVJFRCkKIGZpbmRfcGFja2FnZShFWFBBVCBSRVFVSVJFRCkKQEAgLTYwLDcgKzU5LDcgQEAgZmluZF9wYWNrYWdlKHVub2ZmaWNpYWwtc3FsaXRlMyBDT05GSUcgUkVRVUlSRUQpCiAKICMgSW1wb3J0YW50OiBUaGUgbGluayBvcmRlciBtYXR0ZXJzLCBpdHMgdGhlIHJldmVyc2Ugb3JkZXIgb2YgZGVwZW5kZW5jeQogc2V0KEVYVEVOU0lPTl9ERVBFTkRFTkNJRVMgR0RBTDo6R0RBTCBQUk9KOjpwcm9qIEVYUEFUOjpFWFBBVAotICAgICAgICAgICAgICAgICAgICAgICAgICAgdW5vZmZpY2lhbDo6c3FsaXRlMzo6c3FsaXRlMyBaTElCOjpaTElCIGx6NDo6bHo0IHpzdGQ6OmxpYnpzdGQpCisgICAgICAgICAgICAgICAgICAgICAgICAgICB1bm9mZmljaWFsOjpzcWxpdGUzOjpzcWxpdGUzIFpMSUI6OlpMSUIgbHo0OjpsejQgZHVja2RiX3pzdGQpCiAKIGlmKFNQQVRJQUxfVVNFX0dFT1MpCiAgIG1lc3NhZ2UoU1RBVFVTICJCdWlsZGluZyB3aXRoIEdFT1MgZnVuY3Rpb25hbGl0eSIpCmRpZmYgLS1naXQgYS9zcmMvc3BhdGlhbC9tb2R1bGVzL29zbS9vc21fbW9kdWxlLmNwcCBiL3NyYy9zcGF0aWFsL21vZHVsZXMvb3NtL29zbV9tb2R1bGUuY3BwCmluZGV4IGI5ZjQzZjQuLjBhNDk1YzIgMTAwNjQ0Ci0tLSBhL3NyYy9zcGF0aWFsL21vZHVsZXMvb3NtL29zbV9tb2R1bGUuY3BwCisrKyBiL3NyYy9zcGF0aWFsL21vZHVsZXMvb3NtL29zbV9tb2R1bGUuY3BwCkBAIC0xNzQsNyArMTc0LDcgQEAgdW5pcXVlX3B0cjxGaWxlQmxvY2s+IERlY29tcHJlc3NCbG9iKENsaWVudENvbnRleHQgJmNvbnRleHQsIE9zbUJsb2IgJmJsb2IpIHsKIAkJfQogCQlicmVhazsKIAljYXNlIDc6Ci0JCWlmIChaU1REX2RlY29tcHJlc3MoYnVmZmVyLmdldCgpLCBzaXplLCBwYXlsb2FkLmRhdGEoKSwgcGF5bG9hZC5zaXplKCkpICE9IHNpemUpIHsKKwkJaWYgKGR1Y2tkYl96c3RkOjpaU1REX2RlY29tcHJlc3MoYnVmZmVyLmdldCgpLCBzaXplLCBwYXlsb2FkLmRhdGEoKSwgcGF5bG9hZC5zaXplKCkpICE9IHNpemUpIHsKIAkJCXRocm93IFBhcnNlckV4Y2VwdGlvbigiRmFpbGVkIHRvIGRlY29tcHJlc3MgWnN0YW5kYXJkIE9TTSBibG9iIik7CiAJCX0KIAkJYnJlYWs7CmRpZmYgLS1naXQgYS92Y3BrZy5qc29uIGIvdmNwa2cuanNvbgppbmRleCAyYzc3N2RjLi4yMDNhN2I0IDEwMDY0NAotLS0gYS92Y3BrZy5qc29uCisrKyBiL3ZjcGtnLmpzb24KQEAgLTQsNyArNCw2IEBACiAgICAgIm9wZW5zc2wiLAogICAgICJ6bGliIiwKICAgICAibHo0IiwKLSAgICAienN0ZCIsCiAgICAgImdlb3MiLAogICAgICJleHBhdCIsCiAgICAgewo=\
+        \ | base64 -d | git apply -\nset -euxo pipefail\nsudo apt-get -qq update\n\
+        sudo apt-get -qq install -y liblz4-dev libzstd-dev zlib1g-dev\nmkdir -p /tmp/osm-duck\n\
+        curl -fLsS --retry 3 https://github.com/duckdb/duckdb/releases/download/v2.0.1/duckdb-shared-libs-linux-amd64.tar.gz\
+        \ -o /tmp/duck.zip\ntar xzf /tmp/duck.zip -C /tmp/osm-duck\nDUCK_LIB_DIR=$(dirname\
+        \ \"$(find /tmp/osm-duck -name libduckdb.so | head -1)\")\ngit init --quiet\
+        \ /tmp/duck-src\ngit -C /tmp/duck-src fetch --depth=1 https://github.com/duckdb/duckdb\
+        \ 925bcdf35756dca26ada5228a0c76dc227c5aca5\ngit -C /tmp/duck-src checkout\
+        \ --detach FETCH_HEAD\ntest \"$(git -C /tmp/duck-src rev-parse HEAD)\" = \"\
+        $(git rev-parse HEAD:duckdb)\"\ncmake -S /tmp/duck-src -B /tmp/duck-build\
+        \ -G Ninja -DBUILD_UNITTESTS=OFF -DBUILD_SHELL=OFF -DCMAKE_BUILD_TYPE=Release\n\
+        cmake --build /tmp/duck-build --target duckdb_zstd --parallel 4\nexport ZSTD_ARCHIVE=\"\
+        $(find /tmp/duck-build -name 'libduckdb_zstd.a' -print -quit)\"\ntest -s \"\
+        $ZSTD_ARCHIVE\"\n# Compile the parent against the same headers to check that\
+        \ this catches the original regression.\ngit show HEAD:src/spatial/modules/osm/osm_module.cpp\
+        \ > /tmp/old-osm.cpp\nif c++ -std=c++17 -fsyntax-only -I/tmp/duck-src/third_party/zstd/include\
+        \ -I/tmp/duck-src/src/include -Isrc -Isrc/third_party/protozero/include /tmp/old-osm.cpp\
+        \ 2>/tmp/old-diagnostic; then exit 1; fi\ngrep -E \"ZSTD_decompress.*(not\
+        \ declared|undeclared)\" /tmp/old-diagnostic\ncat >/tmp/osm-native.cpp <<'CPP'\n\
+        #include \"duckdb.hpp\"\n#include \"duckdb/main/extension/extension_loader.hpp\"\
+        \n#include \"spatial/modules/osm/osm_module.hpp\"\n#include <iostream>\nint\
+        \ main(int argc, char **argv) {\n    duckdb::DuckDB db(nullptr);\n    duckdb::ExtensionLoader\
+        \ loader(*db.instance, \"spatial\");\n    duckdb::RegisterOSMModule(loader);\n\
+        \    duckdb::Connection connection(db);\n    for (int i = 1; i < argc; ++i)\
+        \ {\n        auto rows = connection.Query(argv[i]);\n        if (rows->HasError())\
+        \ { std::cerr << rows->GetError(); return 1; }\n        rows->Print();\n \
+        \   }\n}\nCPP\nc++ -std=c++17 -I/tmp/duck-src/third_party/zstd/include -O1\
+        \ -ffunction-sections -fdata-sections -I/tmp/duck-src/src/include -Isrc -Isrc/third_party/protozero/include\
+        \ /tmp/osm-native.cpp src/spatial/modules/osm/osm_module.cpp src/spatial/util/function_builder.cpp\
+        \ -L\"$DUCK_LIB_DIR\" -Wl,-rpath,\"$DUCK_LIB_DIR\" -Wl,--gc-sections \"$ZSTD_ARCHIVE\"\
+        \ -lduckdb -llz4 -lz -o /tmp/osm-native\n/tmp/osm-native \"select case when\
+        \ list(id order by id) = [1,2,3,4] and list(tags['codec'] order by id) = ['raw','zlib','lz4','zstd']\
+        \ then 1 else error('mixed-codec scan differs') end from st_readosm('test/data/osm_mixed_compression.osm.pbf')\"\
+        \ncurl -fLsS --retry 3 https://raw.githubusercontent.com/bingdongni/hpc-rmsnorm-fake-validation-20261109-87ee7a5a00/d33429b76a949c103ec841181149c0edee8eee50/data/monaco-250101.osm.pbf\
+        \ -o /tmp/monaco.osm.pbf\necho \"27ef6e03d3792f43beb319a5bca7b4ac494e8a62c2ace4bf89c68e5a52b00bd9\
+        \  /tmp/monaco.osm.pbf\" | sha256sum -c -\n/tmp/osm-native \"select case when\
+        \ count(*)=45011 then 1 else error('Monaco row count differs') end from st_readosm('/tmp/monaco.osm.pbf')\"\
+        \n\npython3 -m venv /tmp/osm-check\n/tmp/osm-check/bin/pip -q install grpcio-tools\
+        \ zstandard lz4\ncurl -fsSL https://raw.githubusercontent.com/openstreetmap/OSM-binary/master/osmpbf/fileformat.proto\
+        \ -o /tmp/fileformat.proto\n/tmp/osm-check/bin/python -m grpc_tools.protoc\
+        \ --proto_path=/tmp --python_out=/tmp /tmp/fileformat.proto\nPYTHONPATH=/tmp\
+        \ /tmp/osm-check/bin/python - <<'PY'\nimport hashlib, struct, zlib\nfrom pathlib\
+        \ import Path\nimport lz4.block, zstandard as zstd\nfrom fileformat_pb2 import\
+        \ Blob, BlobHeader\ndef cells(path):\n    with path.open(\"rb\") as f:\n \
+        \       while True:\n            n = f.read(4)\n            if not n:\n  \
+        \              break\n            header = BlobHeader.FromString(f.read(struct.unpack(\"\
+        >I\", n)[0]))\n            blob = Blob.FromString(f.read(header.datasize))\n\
+        \            yield header, blob\n\n\ndef decode(b):\n    fmt = b.WhichOneof(\"\
+        data\")\n    if fmt == \"raw\":\n        return b.raw\n    if fmt == \"zlib_data\"\
+        :\n        out = zlib.decompress(b.zlib_data)\n    elif fmt == \"lz4_data\"\
+        :\n        out = lz4.block.decompress(b.lz4_data, uncompressed_size=b.raw_size)\n\
+        \    elif fmt == \"zstd_data\":\n        out = zstd.ZstdDecompressor().decompress(\n\
+        \            b.zstd_data, max_output_size=b.raw_size\n        )\n    else:\n\
+        \        raise ValueError(fmt)\n    assert len(out) == b.raw_size\n    return\
+        \ out\n\n\ndef rewrite(source, dest, codec):\n    chunks = []\n    with dest.open(\"\
+        wb\") as out:\n        for hdr, b in cells(source):\n            raw = decode(b)\n\
+        \            n = Blob()\n            if codec == \"raw\":\n              \
+        \  n.raw = raw\n            else:\n                n.raw_size = len(raw)\n\
+        \                if codec == \"zlib\":\n                    n.zlib_data =\
+        \ zlib.compress(raw)\n                elif codec == \"lz4\":\n           \
+        \         n.lz4_data = lz4.block.compress(raw, store_size=False)\n       \
+        \         elif codec == \"zstd\":\n                    n.zstd_data = zstd.ZstdCompressor().compress(raw)\n\
+        \                else:\n                    raise ValueError(codec)\n    \
+        \        body = n.SerializeToString()\n            hdr.datasize = len(body)\n\
+        \            header = hdr.SerializeToString()\n            out.write(struct.pack(\"\
+        >I\", len(header)))\n            out.write(header)\n            out.write(body)\n\
+        \            chunks.append((hdr.type, hashlib.sha256(raw).hexdigest()))\n\
+        \    return chunks\n\n\n\nfor codec in ('raw','lz4','zstd'):\n    rewrite(Path('/tmp/monaco.osm.pbf'),Path('/tmp/'+codec+'.osm.pbf'),codec)\n\
+        PY\nfor codec in raw lz4 zstd; do\n  /tmp/osm-native \"select case when count(*)\
+        \ = 0 then 1 else error('Monaco records differ') end from ((from st_readosm('/tmp/monaco.osm.pbf')\
+        \ except all from st_readosm('/tmp/$codec.osm.pbf')) union all (from st_readosm('/tmp/$codec.osm.pbf')\
+        \ except all from st_readosm('/tmp/monaco.osm.pbf')))\"\ndone\n"
