@@ -1,45 +1,44 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: Validate network-doc algorithm
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
 jobs:
   test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
-    env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+    name: network-doc
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: bingdongni/networkit
+        ref: 0ece1dc2ff0d100c6a7eedb6691b92536ad8424a
+        persist-credentials: false
+    - name: Apply verified change
+      shell: bash
+      run: 'set -euo pipefail
+
+        echo ZGlmZiAtLWdpdCBhL2luY2x1ZGUvbmV0d29ya2l0L2NvbW11bml0eS9Nb2R1bGFyaXR5LmhwcCBiL2luY2x1ZGUvbmV0d29ya2l0L2NvbW11bml0eS9Nb2R1bGFyaXR5LmhwcAppbmRleCAzNGU5MWVlLi42Yjk3M2M2IDEwMDY0NAotLS0gYS9pbmNsdWRlL25ldHdvcmtpdC9jb21tdW5pdHkvTW9kdWxhcml0eS5ocHAKKysrIGIvaW5jbHVkZS9uZXR3b3JraXQvY29tbXVuaXR5L01vZHVsYXJpdHkuaHBwCkBAIC0xOCw5ICsxOCwxNCBAQCBuYW1lc3BhY2UgTmV0d29yS2l0IHsKICAqIHRvIGEgcGFydGl0aW9uIG9mIGEgZ3JhcGggd2hpY2ggaXMgaGlnaGVyIGZvciBtb3JlIG1vZHVsYXIgbmV0d29ya3MgYW5kIHBhcnRpdGlvbnMgd2hpY2ggYmV0dGVyCiAgKiBjYXB0dXJlIHRoZSBtb2R1bGFyIHN0cnVjdHVyZS4KICAqCi0gKiBGb3IgZGlyZWN0ZWQgZ3JhcGhzIHRoZSBleHBlY3RlZCBpbnRlcm5hbCBlZGdlIGZyYWN0aW9uIG9mIGVhY2ggY29tbXVuaXR5Ci0gKiBpcyB0aGUgcHJvZHVjdCBvZiBpdHMgaW5jb21pbmcgYW5kIG91dGdvaW5nIHdlaWdodCBmcmFjdGlvbnMuIEZvciB1bmRpcmVjdGVkCi0gKiBncmFwaHMgaXQgaXMgdGhlIHNxdWFyZSBvZiBpdHMgZnJhY3Rpb24gb2YgdGhlIHRvdGFsIGRlZ3JlZS4KKyAqIE1vZHVsYXJpdHkgaXMgZGVmaW5lZCBhcworICoKKyAqICQkbW9kKFxcemV0YSkgOj0gY292KFxcemV0YSkKKyAqICAgICAtIFxcc3VtX3tDIFxcaW4gXFx6ZXRhfSBcXGZyYWN7dm9sXntvdXR9KEMpIFxcY2RvdCB2b2xee2lufShDKX17XFxvbWVnYShFKV4yfSwkJAorICoKKyAqIHdoZXJlICRcXG9tZWdhKEUpJCBpcyB0aGUgdG90YWwgZWRnZSB3ZWlnaHQuIEZvciBkaXJlY3RlZCBncmFwaHMgKExlaWNodCBhbmQgTmV3bWFuLCAyMDA4KSwKKyAqICR2b2xee291dH0oQykkIGFuZCAkdm9sXntpbn0oQykkIGFyZSB0aGUgb3V0LSBhbmQgaW4tdm9sdW1lcyBvZiAkQyQuIEZvciB1bmRpcmVjdGVkIGdyYXBocworICogYm90aCBhcmUgaGFsZiB0aGUgdm9sdW1lIG9mICRDJC4KICAqLwogY2xhc3MgTW9kdWxhcml0eSBmaW5hbCA6IHB1YmxpYyBRdWFsaXR5TWVhc3VyZSB7CiAKZGlmZiAtLWdpdCBhL25ldHdvcmtpdC9jb21tdW5pdHkucHl4IGIvbmV0d29ya2l0L2NvbW11bml0eS5weXgKaW5kZXggYzFjYjZhNS4uZmJhZTNkNyAxMDA2NDQKLS0tIGEvbmV0d29ya2l0L2NvbW11bml0eS5weXgKKysrIGIvbmV0d29ya2l0L2NvbW11bml0eS5weXgKQEAgLTUxOCw4ICs1MTgsOSBAQCBjZGVmIGNsYXNzIE1vZHVsYXJpdHk6CiAKIAkuLiBtYXRoOjogbW9kKFx6ZXRhKSA6PSBcXGZyYWN7XHN1bV97QyBcaW4gXHpldGF9IFxzdW1feyBlIFxpbiBFKEMpIH0gXG9tZWdhKGUpfXtcc3VtX3tlIFxpbiBFfSBcb21lZ2EoZSl9IC0gXFxmcmFjeyBcc3VtX3tDIFxpbiBcemV0YX0oIFxzdW1fe3YgXGluIEN9IFxvbWVnYSh2KSApXjIgfXs0KCBcc3VtX3tlIFxpbiBFfSBcb21lZ2EoZSkgKV4yIH0KIAotCUZvciBkaXJlY3RlZCBncmFwaHMsIHRoZSBleHBlY3RlZCBmcmFjdGlvbiBvZiBpbnRlcm5hbCBlZGdlcyBmb3IgZWFjaCBjb21tdW5pdHkKLQlpcyB0aGUgcHJvZHVjdCBvZiBpdHMgaW5jb21pbmcgYW5kIG91dGdvaW5nIGZyYWN0aW9ucyBvZiB0aGUgdG90YWwgZWRnZSB3ZWlnaHQuCisJRm9yIGRpcmVjdGVkIGdyYXBocyAoTGVpY2h0IGFuZCBOZXdtYW4sIDIwMDgpLCB0aGUgc2Vjb25kIHRlcm0gaXMKKwk6bWF0aDpgXFxzdW1fe0MgXFxpbiBcXHpldGF9IFxcZnJhY3t2b2xee291dH0oQykgXFxjZG90IHZvbF57aW59KEMpfXsoXFxzdW1fe2UgXFxpbiBFfSBcXG9tZWdhKGUpKV4yfWAsCisJd2hlcmUgOm1hdGg6YHZvbF57b3V0fShDKWAgYW5kIDptYXRoOmB2b2xee2lufShDKWAgYXJlIHRoZSBvdXQtIGFuZCBpbi12b2x1bWVzIG9mIDptYXRoOmBDYC4KIAogCSIiIgogCWNkZWYgX01vZHVsYXJpdHkgX3RoaXMKQEAgLTIyMTAsNCArMjIxMSw0IEBAIGNsYXNzIFNwZWN0cmFsUGFydGl0aW9uZXI6CiAJCW5ldHdvcmtpdC5QYXJ0aXRpb24KIAkJCVRoZSByZXN1bHRpbmcgcGFydGl0aW9uLiBPbmx5IHZhbGlkIGlmIDpjb2RlOmBydW4oKWAgd2FzIGNhbGxlZCBiZWZvcmUuCiAJCSIiIgotCQlyZXR1cm4gc2VsZi5wYXJ0aXRpb24KXCBObyBuZXdsaW5lIGF0IGVuZCBvZiBmaWxlCisJCXJldHVybiBzZWxmLnBhcnRpdGlvbgpkaWZmIC0tZ2l0IGEvbmV0d29ya2l0L2NwcC9jb21tdW5pdHkvdGVzdC9Db21tdW5pdHlHVGVzdC5jcHAgYi9uZXR3b3JraXQvY3BwL2NvbW11bml0eS90ZXN0L0NvbW11bml0eUdUZXN0LmNwcAppbmRleCA3ZDE3ODA1Li44ZDRhZWExIDEwMDY0NAotLS0gYS9uZXR3b3JraXQvY3BwL2NvbW11bml0eS90ZXN0L0NvbW11bml0eUdUZXN0LmNwcAorKysgYi9uZXR3b3JraXQvY3BwL2NvbW11bml0eS90ZXN0L0NvbW11bml0eUdUZXN0LmNwcApAQCAtMzkxLDcgKzM5MSw3IEBAIFRFU1RfRihDb21tdW5pdHlHVGVzdCwgdGVzdERpcmVjdGVkTW9kdWxhcml0eSkgewogICAgIHpldGEuYWxsVG9TaW5nbGV0b25zKCk7CiAgICAgemV0YS5tb3ZlVG9TdWJzZXQoMCwgMSk7CiAKLSAgICAvLyBUaGUgdHdvIG5vbmVtcHR5IGVkZ2UgZ3JvdXBzIGhhdmUgKG91dCwgaW4pIHZvbHVtZXMgKDYsIDQpIGFuZCAoMSwgMykuCisgICAgLy8gQ29tbXVuaXRpZXMgezAsIDF9IGFuZCB7Mn0gaGF2ZSAob3V0LCBpbikgdm9sdW1lcyAoNiwgNCkgYW5kICgxLCAzKTsgbSA9IDcuCiAgICAgTW9kdWxhcml0eSBtb2R1bGFyaXR5OwogICAgIEVYUEVDVF9ORUFSKG1vZHVsYXJpdHkuZ2V0UXVhbGl0eSh6ZXRhLCBHKSwgMy4wIC8gNyAtIDI3LjAgLyA0OSwgMWUtMTQpOwogICAgIHpldGEubW92ZVRvU3Vic2V0KDAsIDIpOwo=
+        | base64 -d | git apply -
+
+        git diff --check'
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Run tests
+      shell: bash
+      run: "set -euo pipefail\npython -m pip -q install 'cython>=3,<4'\ncython -3\
+        \ --cplus -I . networkit/community.pyx -o /tmp/networkit_community.cpp\npython\
+        \ - <<'PY'\nfrom pathlib import Path\nfrom fractions import Fraction as F\n\
+        import re\nfrom itertools import product\nfrom ast import literal_eval\ns=Path('networkit/community.pyx').read_text()\n\
+        doc=literal_eval(re.search(r'cdef class Modularity:\\s*(\"\"\".*?\"\"\")',s,re.S)[1])\n\
+        assert r'\\frac{vol^{out}(C) \\cdot vol^{in}(C)}' in doc\nedges=[(0,0,1),(0,1,2),(1,2,3),(2,1,1)]\n\
+        labels=(0,0,2,3)\nfor directed in [True,False]:\n    total=sum(w for _,_,w\
+        \ in edges)\n    vol_out=[sum(w*((labels[u]==c) if directed else F((labels[u]==c)+(labels[v]==c),2))\
+        \ for u,v,w in edges) for c in range(4)]\n    vol_in=[sum(w*((labels[v]==c)\
+        \ if directed else F((labels[u]==c)+(labels[v]==c),2)) for u,v,w in edges)\
+        \ for c in range(4)]\n    if directed:\n        assert list(zip(vol_out,vol_in))==[(6,4),(0,0),(1,3),(0,0)]\n\
+        \    cov=F(sum(w for u,v,w in edges if labels[u]==labels[v]),total)\n    mod=cov-sum(F(o*i,total**2)\
+        \ for o,i in zip(vol_out,vol_in))\n    assert mod == (F(-6,49) if directed\
+        \ else F(3,7)-F(29,49))\nprint(\"Cython docstring and directed/undirected\
+        \ formula checks passed\")\nPY\n"
