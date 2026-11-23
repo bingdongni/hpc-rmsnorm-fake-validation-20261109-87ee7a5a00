@@ -78,7 +78,7 @@ jobs:
     env:
       DP_ENABLE_PYTORCH: '0'
       DP_ENABLE_TENSORFLOW: '0'
-      CL: /D_USE_MATH_DEFINES
+      CMAKE_ARGS: -DCMAKE_CXX_FLAGS=-D_USE_MATH_DEFINES
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
