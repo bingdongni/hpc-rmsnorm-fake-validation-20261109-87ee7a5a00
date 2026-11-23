@@ -1,45 +1,106 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: Validate vespa-native algorithm
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
-    env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+  rank:
+    name: Native Vespa global-phase versus query-time text reranking
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - name: Deploy the document tokenizer and BM25 schema
+      run: "set -euo pipefail\ndocker run -d --name vespa --hostname vespa -p 127.0.0.1:8080:8080\
+        \ -p 127.0.0.1:19071:19071 vespaengine/vespa:8.788.13\ndocker inspect --format\
+        \ '{{.Image}}' vespa\npython -m pip install requests pyarrow onnxruntime tokenizers\
+        \ numpy\nmkdir -p app/models\nmkdir -p app\ncat >app/services.xml <<'END_FILE'\n\
+        <services version=\"1.0\"><container id=\"default\" version=\"1.0\"><search/><document-api/><component\
+        \ id=\"tok\" type=\"hugging-face-tokenizer\"><model path=\"models/tokenizer.json\"\
+        /></component></container><content id=\"docs\" version=\"1.0\"><redundancy>1</redundancy><documents><document\
+        \ type=\"doc\" mode=\"index\"/></documents><nodes><node distribution-key=\"\
+        0\" hostalias=\"node1\"/></nodes></content></services>\nEND_FILE\nmkdir -p\
+        \ app\ncat >app/hosts.xml <<'END_FILE'\n<hosts><host name=\"localhost\"><alias>node1</alias></host></hosts>\n\
+        END_FILE\nmkdir -p app/schemas\ncat >app/schemas/doc.sd <<'END_FILE'\nschema\
+        \ doc {\n document doc {\n  field title type string { indexing: index | summary\n\
+        \   index: enable-bm25 }\n  field body type string { indexing: index | summary\n\
+        \   index: enable-bm25 }\n }\n field tokens type tensor<float>(d0[96]) {\n\
+        \  indexing: (input title || \"\") . \" \" . (input body || \"\") | embed\
+        \ tok | attribute | summary\n }\n fieldset all_text { fields: title, body\
+        \ }\n rank-profile retrieve { first-phase { expression: bm25(title) + bm25(body)\
+        \ } }\n}\nEND_FILE\n\ncurl -fsSL --retry 4 https://huggingface.co/cross-encoder/ms-marco-TinyBERT-L2-v2/resolve/81d1926f67cb8eee2c2be17ca9f793c7c3bd20cc/tokenizer.json\
+        \ -o app/models/tokenizer.json\ncurl -fsSL --retry 4 https://huggingface.co/cross-encoder/ms-marco-TinyBERT-L2-v2/resolve/81d1926f67cb8eee2c2be17ca9f793c7c3bd20cc/onnx/model.onnx\
+        \ -o rank.onnx\ncurl -fsSL --retry 4 https://huggingface.co/datasets/BeIR/scifact/resolve/b3b5335604bf5ee3c4447671af975ea25143d4f5/corpus/corpus-00000-of-00001.parquet\
+        \ -o corpus.parquet\ncurl -fsSL --retry 4 https://huggingface.co/datasets/BeIR/scifact/resolve/b3b5335604bf5ee3c4447671af975ea25143d4f5/queries/queries-00000-of-00001.parquet\
+        \ -o queries.parquet\nfor i in {1..90}; do if curl -fsS http://localhost:19071/state/v1/health\
+        \ >/dev/null; then break; fi; sleep 2; done\ncp rank.onnx app/models/rank.onnx\n\
+        python - <<'NATIVE'\nfrom pathlib import Path\np=Path('app/schemas/doc.sd')\n\
+        s=p.read_text().rstrip();assert s.endswith('}')\np.write_text(s[:-1]+\"\"\"\
+        \ rank-profile cross inherits retrieve {\n  inputs { query(qtokens) tensor<float>(d0[30])\
+        \ }\n  function ids() { expression: tokenInputIds(128, query(qtokens), attribute(tokens))\
+        \ }\n  function types() { expression: tokenTypeIds(128, query(qtokens), attribute(tokens))\
+        \ }\n  function mask() { expression: tokenAttentionMask(128, query(qtokens),\
+        \ attribute(tokens)) }\n  onnx-model ranker {\n   file: models/rank.onnx\n\
+        \   input input_ids: ids\n   input token_type_ids: types\n   input attention_mask:\
+        \ mask\n  }\n  match-features: attribute(tokens)\n  global-phase {\n   rerank-count:\
+        \ 25\n   expression: onnx(ranker){d0:0,d1:0}\n  }\n }\n\"\"\"+'}')\nNATIVE\n\
+        docker cp app vespa:/tmp/rank-app\ndocker exec -u root vespa chmod -R a+rX\
+        \ /tmp/rank-app\ndocker exec vespa bash -lc '/opt/vespa/bin/vespa-deploy prepare\
+        \ /tmp/rank-app && /opt/vespa/bin/vespa-deploy activate'\nfor i in {1..90};\
+        \ do if curl -fsS http://localhost:8080/ApplicationStatus >/dev/null; then\
+        \ break; fi; sleep 2; done"
+    - name: Compare candidates, tokens and cross-encoder scores
+      run: "python - <<'PY'\nfrom concurrent.futures import ThreadPoolExecutor\nimport\
+        \ os,time,statistics,json,re\nfrom pathlib import Path\nimport numpy as np,requests,onnxruntime\
+        \ as ort,pyarrow.parquet as pq\nfrom tokenizers import Tokenizer\n\nserver=\"\
+        http://localhost:8080\"\ndocs=pq.read_table(\"corpus.parquet\").to_pylist()\n\
+        queries=pq.read_table(\"queries.parquet\").to_pylist()\ndocs=docs[:2000]\n\
+        def feed(d):\n    r=requests.post(f\"{server}/document/v1/test/doc/docid/{d['_id']}\"\
+        ,json={\"fields\":{\"title\":d[\"title\"],\"body\":d[\"text\"]}},timeout=60);r.raise_for_status()\n\
+        with ThreadPoolExecutor(6) as p:list(p.map(feed,docs))\ndef query(q,fields,qtokens=None):\n\
+        \    terms=re.findall(r\"[a-zA-Z]{3,}\",q.lower())[:12]\n    clauses=[f'{f}\
+        \ contains \"{word}\"' for f in ('title','body') for word in terms]\n    p={\"\
+        yql\":f\"select {fields} from doc where \"+' or '.join(clauses),\"ranking\"\
+        :\"retrieve\",\"hits\":25,\"format.tensors\":\"short\",\"timeout\":\"20s\"\
+        }\n    if qtokens is not None:\n        p[\"ranking\"]=\"cross\"\n       \
+        \ p[\"input.query(qtokens)\"]=json.dumps(qtokens+[0]*(30-len(qtokens)))\n\
+        \    r=requests.get(server+\"/search/\",params=p,timeout=30);r.raise_for_status()\n\
+        \    result=r.json()['root']\n    if 'errors' in result:raise RuntimeError(result['errors'])\n\
+        \    return result.get('children',[]),len(r.content)\ntok=Tokenizer.from_file('app/models/tokenizer.json')\n\
+        tok.no_padding();tok.no_truncation()\noptions=ort.SessionOptions();options.intra_op_num_threads=2\n\
+        model=ort.InferenceSession('rank.onnx',sess_options=options,providers=['CPUExecutionProvider'])\n\
+        def pair_scores(qids,ds):\n    seqs=[];types=[]\n    for d in ds:\n      \
+        \  seq=[101]+qids+[102]+d[:126-len(qids)-1]+[102]\n        seg=[0]*(len(qids)+2)+[1]*(len(seq)-len(qids)-2)\n\
+        \        seqs.append(seq);types.append(seg)\n    length=max(map(len,seqs))\n\
+        \    data={'input_ids':np.array([s+[0]*(length-len(s)) for s in seqs],np.int64),\n\
+        \          'attention_mask':np.array([[1]*len(s)+[0]*(length-len(s)) for s\
+        \ in seqs],np.int64),\n          'token_type_ids':np.array([s+[0]*(length-len(s))\
+        \ for s in types],np.int64)}\n    return model.run(None,{v.name:data[v.name]\
+        \ for v in model.get_inputs()})[0].ravel()\ntimes=[[],[]];wire=[[],[]];toks=[];candidate_count=0\n\
+        query_count=0\nnative_ms=[];max_diff=0.;equal_rank=0\nfor sample in queries:\n\
+        \    q=sample[\"text\"];order=(0,1) if query_count%2==0 else (1,0)\n    results={}\n\
+        \    for i in order:\n        t=time.perf_counter();hits,n=query(q,[\"tokens\"\
+        ,\"title,body\"][i]);dt=time.perf_counter()-t\n        results[i]=(hits,n,dt)\n\
+        \    a,b=results[0][0],results[1][0]\n    if len(a)!=25:continue\n    assert\
+        \ [v['id'] for v in a]==[v['id'] for v in b]\n    ids=[]\n    for row in a:\n\
+        \        t=row['fields']['tokens'];v=t['values'] if isinstance(t,dict) else\
+        \ t\n        ids.append([int(x) for x in v if x!=0])\n    t=time.perf_counter()\n\
+        \    lazy=[e.ids[:96] for e in tok.encode_batch([row['fields']['title']+'\
+        \ '+row['fields']['body'] for row in b],add_special_tokens=False)]\n    elapsed=time.perf_counter()-t\n\
+        \    if ids!=lazy:\n        k=next(k for k in range(len(ids)) if ids[k]!=lazy[k]);raise\
+        \ AssertionError((ids[k][:12],lazy[k][:12],len(ids[k]),len(lazy[k])))\n  \
+        \  qids=tok.encode(q,add_special_tokens=False).ids[:30]\n    s1=pair_scores(qids,ids);s2=pair_scores(qids,lazy)\n\
+        \    np.testing.assert_array_equal(s1,s2);np.testing.assert_array_equal(np.argsort(-s1,kind='stable'),np.argsort(-s2,kind='stable'))\n\
+        \    begin=time.perf_counter()\n    native,_=query(q,\"title\",qids)\n   \
+        \ native_time=(time.perf_counter()-begin)*1000\n    actual={v[\"id\"]:v[\"\
+        relevance\"] for v in native}\n    assert actual.keys()=={v[\"id\"] for v\
+        \ in b},(\"candidates changed\",len(actual),len(b))\n    actual=np.asarray([actual[v[\"\
+        id\"]] for v in b])\n    gap=float(np.max(np.abs(actual-s2)))\n    if query_count==0:\
+        \ print(\"SCORES\",actual[:5],s2[:5],flush=True)\n    np.testing.assert_allclose(actual,s2,rtol=1e-4,atol=1e-4)\n\
+        \    if query_count>=2:\n        max_diff=max(max_diff,gap)\n        equal_rank+=int(np.array_equal(np.argsort(-actual,kind=\"\
+        stable\"),np.argsort(-s2,kind=\"stable\")))\n        native_ms.append(native_time)\n\
+        \        for i in order: wire[i].append(results[i][1]);times[i].append(results[i][2]*1000)\n\
+        \        toks.append(elapsed*1000);candidate_count+=len(a)\n    query_count+=1\n\
+        \    if query_count==22:break\nassert len(toks)==20, (len(toks),len(docs),len(queries))\n\
+        print(\"RESULT\",json.dumps(dict(docs=len(docs),queries=len(toks),candidate_pairs=candidate_count,equal_tokens_logits_and_rank=True,tokenization_ms_p95=np.percentile(toks,95),stored_summary_http_ms_p95=np.percentile(times[0],95),text_summary_http_ms_p95=np.percentile(times[1],95),stored_summary_mean_bytes=statistics.mean(wire[0]),text_summary_mean_bytes=statistics.mean(wire[1]),dense_payload_bytes_per_doc=96*4)),flush=True)\n\
+        \nprint(\"RESULT\",json.dumps(dict(native_queries=len(native_ms),rank_agreement_queries=equal_rank,max_abs_logit_difference=max_diff,native_http_ms_p95=float(np.percentile(native_ms,95)))))\n\
+        \nPY"
