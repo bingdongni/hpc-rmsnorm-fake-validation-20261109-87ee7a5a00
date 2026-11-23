@@ -41,13 +41,13 @@ jobs:
         \ }\n  function mask() { expression: tokenAttentionMask(128, query(qtokens),\
         \ attribute(tokens)) }\n  onnx-model ranker {\n   file: models/rank.onnx\n\
         \   input input_ids: ids\n   input token_type_ids: types\n   input attention_mask:\
-        \ mask\n  }\n  match-features: attribute(tokens)\n  global-phase {\n   rerank-count:\
-        \ 25\n   expression: onnx(ranker){d0:0,d1:0}\n  }\n }\n\"\"\"+'}')\nNATIVE\n\
-        docker cp app vespa:/tmp/rank-app\ndocker exec -u root vespa chmod -R a+rX\
-        \ /tmp/rank-app\ndocker exec vespa bash -lc '/opt/vespa/bin/vespa-deploy prepare\
-        \ /tmp/rank-app && /opt/vespa/bin/vespa-deploy activate'\nfor i in {1..90};\
-        \ do if curl -fsS http://localhost:8080/ApplicationStatus >/dev/null; then\
-        \ break; fi; sleep 2; done"
+        \ mask\n  }\n  match-features: attribute(tokens) ids types mask\n  global-phase\
+        \ {\n   rerank-count: 25\n   expression: onnx(ranker){d0:0,d1:0}\n  }\n }\n\
+        \"\"\"+'}')\nNATIVE\ndocker cp app vespa:/tmp/rank-app\ndocker exec -u root\
+        \ vespa chmod -R a+rX /tmp/rank-app\ndocker exec vespa bash -lc '/opt/vespa/bin/vespa-deploy\
+        \ prepare /tmp/rank-app && /opt/vespa/bin/vespa-deploy activate'\nfor i in\
+        \ {1..90}; do if curl -fsS http://localhost:8080/ApplicationStatus >/dev/null;\
+        \ then break; fi; sleep 2; done"
     - name: Compare candidates, tokens and cross-encoder scores
       run: "python - <<'PY'\nfrom concurrent.futures import ThreadPoolExecutor\nimport\
         \ os,time,statistics,json,re\nfrom pathlib import Path\nimport numpy as np,requests,onnxruntime\
@@ -76,10 +76,10 @@ jobs:
         \ in seqs],np.int64),\n          'token_type_ids':np.array([s+[0]*(length-len(s))\
         \ for s in types],np.int64)}\n    return model.run(None,{v.name:data[v.name]\
         \ for v in model.get_inputs()})[0].ravel()\ntimes=[[],[]];wire=[[],[]];toks=[];candidate_count=0\n\
-        query_count=0\nnative_ms=[];max_diff=0.;equal_rank=0\nfor sample in queries:\n\
-        \    q=sample[\"text\"];order=(0,1) if query_count%2==0 else (1,0)\n    results={}\n\
-        \    for i in order:\n        t=time.perf_counter();hits,n=query(q,[\"tokens\"\
-        ,\"title,body\"][i]);dt=time.perf_counter()-t\n        results[i]=(hits,n,dt)\n\
+        query_count=0\nnative_ms=[];max_diff=0.;equal_rank=0;differing_pairs=0;token_diffs={};ranks_same=[];native_input_delta=0.;policy_pairs=0\n\
+        for sample in queries:\n    q=sample[\"text\"];order=(0,1) if query_count%2==0\
+        \ else (1,0)\n    results={}\n    for i in order:\n        t=time.perf_counter();hits,n=query(q,[\"\
+        tokens\",\"title,body\"][i]);dt=time.perf_counter()-t\n        results[i]=(hits,n,dt)\n\
         \    a,b=results[0][0],results[1][0]\n    if len(a)!=25:continue\n    assert\
         \ [v['id'] for v in a]==[v['id'] for v in b]\n    ids=[]\n    for row in a:\n\
         \        t=row['fields']['tokens'];v=t['values'] if isinstance(t,dict) else\
@@ -90,17 +90,40 @@ jobs:
         \ AssertionError((ids[k][:12],lazy[k][:12],len(ids[k]),len(lazy[k])))\n  \
         \  qids=tok.encode(q,add_special_tokens=False).ids[:30]\n    s1=pair_scores(qids,ids);s2=pair_scores(qids,lazy)\n\
         \    np.testing.assert_array_equal(s1,s2);np.testing.assert_array_equal(np.argsort(-s1,kind='stable'),np.argsort(-s2,kind='stable'))\n\
-        \    begin=time.perf_counter()\n    native,_=query(q,\"title\",qids)\n   \
-        \ native_time=(time.perf_counter()-begin)*1000\n    actual={v[\"id\"]:v[\"\
-        relevance\"] for v in native}\n    assert actual.keys()=={v[\"id\"] for v\
-        \ in b},(\"candidates changed\",len(actual),len(b))\n    actual=np.asarray([actual[v[\"\
+        \    begin=time.perf_counter()\n    native,_=query(q,\"*\",qids)\n    native_time=(time.perf_counter()-begin)*1000\n\
+        \    actual={v[\"id\"]:v[\"relevance\"] for v in native}\n    assert actual.keys()=={v[\"\
+        id\"] for v in b},(\"candidates changed\",len(actual),len(b))\n    actual=np.asarray([actual[v[\"\
         id\"]] for v in b])\n    gap=float(np.max(np.abs(actual-s2)))\n    if query_count==0:\
-        \ print(\"SCORES\",actual[:5],s2[:5],flush=True)\n    np.testing.assert_allclose(actual,s2,rtol=1e-4,atol=1e-4)\n\
-        \    if query_count>=2:\n        max_diff=max(max_diff,gap)\n        equal_rank+=int(np.array_equal(np.argsort(-actual,kind=\"\
+        \ print(\"SCORES\",actual[:5],s2[:5],flush=True)\n    def arr(d,k):\n    \
+        \    v=d[k] if k in d else d[\"rankingExpression(\"+k+\")\"]\n        return\
+        \ np.array(v.get(\"values\",v) if isinstance(v,dict) else v,dtype=np.int64).reshape(128)\n\
+        \    # Audit actual native transformer inputs by document id against an independently\n\
+        \    # constructed pair from the query and the raw document text.\n    by_id={hit[\"\
+        id\"]:hit[\"fields\"][\"matchfeatures\"] for hit in native}\n    native_data={k:[]\
+        \ for k in (\"input_ids\",\"attention_mask\",\"token_type_ids\")}\n    for\
+        \ i,row in enumerate(b):\n        d=lazy[i]\n        seq=([101]+qids+[102]+d[:125-len(qids)]+[102])\n\
+        \        wrap=([101]+qids+[102]+d+[102])[:128]\n        seg=[0]*(len(qids)+2)+[1]*(len(seq)-len(qids)-2)\n\
+        \        feats=by_id[row[\"id\"]]\n        if query_count==0 and i==0:print(\"\
+        FEATURE_NAMES\",list(feats),flush=True)\n        iii,mm,tt=[arr(feats,k) for\
+        \ k in (\"ids\",\"mask\",\"types\")]\n        native_data[\"input_ids\"].append(iii);native_data[\"\
+        attention_mask\"].append(mm);native_data[\"token_type_ids\"].append(tt)\n\
+        \        ours=np.asarray(seq+[0]*(128-len(seq)))\n        type_ids=np.asarray(seg+[0]*(128-len(seg)))\n\
+        \        mask_ids=np.asarray([1]*len(seq)+[0]*(128-len(seq)))\n        mismatch=not\
+        \ (np.array_equal(iii,ours) and np.array_equal(mm,mask_ids) and np.array_equal(tt,type_ids))\n\
+        \        if mismatch and query_count>=2:\n            differing_pairs+=1\n\
+        \            sig=(len(qids),len(d),tuple(np.where(iii!=ours)[0].tolist()),tuple(np.where(tt!=type_ids)[0].tolist()),tuple(np.where(mm!=mask_ids)[0].tolist()))\n\
+        \            token_diffs[str(sig)]=token_diffs.get(str(sig),0)+1\n       \
+        \ if query_count>=2 and np.array_equal(iii,np.asarray(wrap+[0]*(128-len(wrap)))):policy_pairs+=1\n\
+        \    v=model.run(None,{k:np.stack(rows) for k,rows in native_data.items()})[0].ravel()\n\
+        \    np.testing.assert_allclose(actual,v,atol=1e-4,rtol=1e-4)\n    if query_count>=2:\n\
+        \        native_input_delta=max(native_input_delta,float(np.abs(v-actual).max()))\n\
+        \        ranks_same.append(bool(np.array_equal(np.argsort(-v,kind=\"stable\"\
+        ),np.argsort(-actual,kind=\"stable\"))))\n    if query_count>=2:\n       \
+        \ max_diff=max(max_diff,gap)\n        equal_rank+=int(np.array_equal(np.argsort(-actual,kind=\"\
         stable\"),np.argsort(-s2,kind=\"stable\")))\n        native_ms.append(native_time)\n\
         \        for i in order: wire[i].append(results[i][1]);times[i].append(results[i][2]*1000)\n\
         \        toks.append(elapsed*1000);candidate_count+=len(a)\n    query_count+=1\n\
         \    if query_count==22:break\nassert len(toks)==20, (len(toks),len(docs),len(queries))\n\
         print(\"RESULT\",json.dumps(dict(docs=len(docs),queries=len(toks),candidate_pairs=candidate_count,equal_tokens_logits_and_rank=True,tokenization_ms_p95=np.percentile(toks,95),stored_summary_http_ms_p95=np.percentile(times[0],95),text_summary_http_ms_p95=np.percentile(times[1],95),stored_summary_mean_bytes=statistics.mean(wire[0]),text_summary_mean_bytes=statistics.mean(wire[1]),dense_payload_bytes_per_doc=96*4)),flush=True)\n\
-        \nprint(\"RESULT\",json.dumps(dict(native_queries=len(native_ms),rank_agreement_queries=equal_rank,max_abs_logit_difference=max_diff,native_http_ms_p95=float(np.percentile(native_ms,95)))))\n\
+        \nprint(\"RESULT\",json.dumps(dict(native_queries=len(native_ms),actual_input_max_logit_delta=native_input_delta,actual_input_rank_equal=sum(ranks_same),truncated_concat_matches=policy_pairs,raw_input_mismatches=differing_pairs,mismatch_examples=dict(list(token_diffs.items())[:3]),rank_agreement_queries=equal_rank,max_abs_logit_difference=max_diff,native_http_ms_p95=float(np.percentile(native_ms,95)))))\n\
         \nPY"
