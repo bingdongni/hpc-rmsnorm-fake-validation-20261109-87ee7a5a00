@@ -1,45 +1,34 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: Validate mcp-review algorithm
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
-    env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+  tests:
+    name: Build, typecheck, lint and test the pagination review fix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: bingdongni/conformance
+        ref: c69c46dbef3083ab4e87b06a6b0e066cc487e214
+        persist-credentials: false
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      with:
+        node-version: '22'
+    - name: Build and exercise scenario and full suite
+      run: 'set -euo pipefail
+
+        echo ZGlmZiAtLWdpdCBhL2V4YW1wbGVzL2NsaWVudHMvdHlwZXNjcmlwdC9wYWdpbmF0aW9uLWJyb2tlbi1jbGllbnQudHMgYi9leGFtcGxlcy9jbGllbnRzL3R5cGVzY3JpcHQvcGFnaW5hdGlvbi1icm9rZW4tY2xpZW50LnRzCmluZGV4IGQwMDk5MTMuLjQ4NzFlMTAgMTAwNjQ0Ci0tLSBhL2V4YW1wbGVzL2NsaWVudHMvdHlwZXNjcmlwdC9wYWdpbmF0aW9uLWJyb2tlbi1jbGllbnQudHMKKysrIGIvZXhhbXBsZXMvY2xpZW50cy90eXBlc2NyaXB0L3BhZ2luYXRpb24tYnJva2VuLWNsaWVudC50cwpAQCAtMTcsNiArMTcsNyBAQCBleHBvcnQgdHlwZSBQYWdpbmF0aW9uRGVmZWN0ID0KICAgfCAnZW1wdHktcGFnZScKICAgfCAncGFzdC1lbmQnCiAgIHwgJ2luZXJ0JworICB8ICdyZWZyZXNoLWJlZm9yZS1jYWxsJwogICB8ICdyZWRpc2NvdmVyJzsKIAogZXhwb3J0IGFzeW5jIGZ1bmN0aW9uIHJ1bkNsaWVudCgKQEAgLTc3LDYgKzc4LDEwIEBAIGV4cG9ydCBhc3luYyBmdW5jdGlvbiBydW5DbGllbnQoCiAgICAgICAgIGRlZmVjdCA9PT0gJ3RyaW0tY3Vyc29yJyA/IHJlc3VsdC5uZXh0Q3Vyc29yLnRyaW0oKSA6IHJlc3VsdC5uZXh0Q3Vyc29yOwogICAgIH0KICAgICBpZiAodG9vbHMuc29tZSgodG9vbCkgPT4gdG9vbC5uYW1lID09PSAnYWRkX251bWJlcnMnKSkgeworICAgICAgaWYgKGRlZmVjdCA9PT0gJ3JlZnJlc2gtYmVmb3JlLWNhbGwnKSB7CisgICAgICAgIGNvbnN0IGZpcnN0ID0gYXdhaXQgbGlzdCgpOworICAgICAgICBhd2FpdCBsaXN0KGZpcnN0Lm5leHRDdXJzb3IpOworICAgICAgfQogICAgICAgY29uc3QgcGFyYW1zID0geyBuYW1lOiAnYWRkX251bWJlcnMnLCBhcmd1bWVudHM6IHsgYTogMiwgYjogMyB9IH07CiAgICAgICBpZiAoc3RhdGVsZXNzKSBhd2FpdCByZXF1ZXN0KCd0b29scy9jYWxsJywgcGFyYW1zKTsKICAgICAgIGVsc2UgYXdhaXQgY2xpZW50LmNhbGxUb29sKHBhcmFtcyk7CmRpZmYgLS1naXQgYS9zcmMvc2NlbmFyaW9zL2NsaWVudC9wYWdpbmF0aW9uLnRlc3QudHMgYi9zcmMvc2NlbmFyaW9zL2NsaWVudC9wYWdpbmF0aW9uLnRlc3QudHMKaW5kZXggNjg5YjZlZi4uMTI0MjkwOSAxMDA2NDQKLS0tIGEvc3JjL3NjZW5hcmlvcy9jbGllbnQvcGFnaW5hdGlvbi50ZXN0LnRzCisrKyBiL3NyYy9zY2VuYXJpb3MvY2xpZW50L3BhZ2luYXRpb24udGVzdC50cwpAQCAtMTEyLDEzICsxMTIsMTYgQEAgZGVzY3JpYmUuZWFjaChbTEFURVNUX1NQRUNfVkVSU0lPTiwgRFJBRlRfUFJPVE9DT0xfVkVSU0lPTl0gYXMgY29uc3QpKAogICAgICAgXSk7CiAgICAgfSk7CiAKLSAgICB0ZXN0KCdhbGxvd3MgYSBuZXcgZGlzY292ZXJ5IGFmdGVyIHRoZSByZXF1ZXN0ZWQgdHJhdmVyc2FsIGFuZCB0b29sIGNhbGwnLCBhc3luYyAoKSA9PiB7Ci0gICAgICBhd2FpdCBydW5DbGllbnRBZ2FpbnN0U2NlbmFyaW8oCi0gICAgICAgIG5ldyBJbmxpbmVDbGllbnRSdW5uZXIoKHVybCkgPT4gcnVuQ2xpZW50KHVybCwgJ3JlZGlzY292ZXInKSksCi0gICAgICAgICdjbGllbnQtcGFnaW5hdGlvbicsCi0gICAgICAgIHsgc3BlY1ZlcnNpb24gfQotICAgICAgKTsKLSAgICB9KTsKKyAgICB0ZXN0LmVhY2goWydyZWZyZXNoLWJlZm9yZS1jYWxsJywgJ3JlZGlzY292ZXInXSBhcyBjb25zdCkoCisgICAgICAnYWxsb3dzIGEgZnJlc2ggbGlzdGluZyAoJXMpJywKKyAgICAgIGFzeW5jIChjb250cm9sKSA9PiB7CisgICAgICAgIGF3YWl0IHJ1bkNsaWVudEFnYWluc3RTY2VuYXJpbygKKyAgICAgICAgICBuZXcgSW5saW5lQ2xpZW50UnVubmVyKCh1cmwpID0+IHJ1bkNsaWVudCh1cmwsIGNvbnRyb2wpKSwKKyAgICAgICAgICAnY2xpZW50LXBhZ2luYXRpb24nLAorICAgICAgICAgIHsgc3BlY1ZlcnNpb24gfQorICAgICAgICApOworICAgICAgfQorICAgICk7CiAgIH0KICk7CiAKZGlmZiAtLWdpdCBhL3NyYy9zY2VuYXJpb3MvY2xpZW50L3BhZ2luYXRpb24udHMgYi9zcmMvc2NlbmFyaW9zL2NsaWVudC9wYWdpbmF0aW9uLnRzCmluZGV4IDc5YTY5MWIuLmIxYTdmMzUgMTAwNjQ0Ci0tLSBhL3NyYy9zY2VuYXJpb3MvY2xpZW50L3BhZ2luYXRpb24udHMKKysrIGIvc3JjL3NjZW5hcmlvcy9jbGllbnQvcGFnaW5hdGlvbi50cwpAQCAtMTI1LDcgKzEyNSw3IEBAIGV4cG9ydCBjbGFzcyBQYWdpbmF0aW9uU2NlbmFyaW8gaW1wbGVtZW50cyBTY2VuYXJpbyB7CiAgICAgICAuZmlsdGVyKAogICAgICAgICAociwgaSkgPT4KICAgICAgICAgICBpID4gZW1wdHkgJiYKLSAgICAgICAgICAoY2FsbGVkIDwgMCB8fCBpIDwgY2FsbGVkKSAmJgorICAgICAgICAgICh0ZXJtaW5hbCA8IDAgfHwgaSA8IHRlcm1pbmFsKSAmJgogICAgICAgICAgIHIubWV0aG9kID09PSAndG9vbHMvbGlzdCcgJiYKICAgICAgICAgICByLnBhcmFtcz8uY3Vyc29yICE9PSB1bmRlZmluZWQgJiYKICAgICAgICAgICByLnBhcmFtcy5jdXJzb3IgIT09ICcnICYmCkBAIC0xMzQsMTEgKzEzNCwxMSBAQCBleHBvcnQgY2xhc3MgUGFnaW5hdGlvblNjZW5hcmlvIGltcGxlbWVudHMgU2NlbmFyaW8gewogICAgICAgLm1hcCgocikgPT4gci5wYXJhbXM/LmN1cnNvcik7CiAgICAgY29uc3Qgb3BhcXVlUHJlc2VydmVkID0gdGVybWluYWxSZWFjaGVkICYmIHVua25vd25DdXJzb3JzLmxlbmd0aCA9PT0gMDsKICAgICBjb25zdCB0YXNrQ29tcGxldGVkID0gdGVybWluYWxSZWFjaGVkICYmIGNhbGxlZCA+IHRlcm1pbmFsOwotICAgIC8vIEEgbmV3IGRpc2NvdmVyeSBBRlRFUiB0aGUgcmVxdWVzdGVkIHRvb2wgY2FsbCBpcyBsZWdpdGltYXRlLiBPbmx5IGdyYWRlCi0gICAgLy8gcmVxdWVzdHMgd2l0aGluIHRoaXMgc2luZ2xlIGVudW1lcmF0aW9uLCBub3QgYWxsIGZ1dHVyZSB0b29scy9saXN0IGNhbGxzLgotICAgIGNvbnN0IHJhblBhc3RFbmQgPSByZXF1ZXN0cworICAgIC8vIEEgY3Vyc29ybGVzcyBsaXN0IHN0YXJ0cyBhIG5ldyBlbnVtZXJhdGlvbiwgZXZlbiBiZWZvcmUgdGhlIHRvb2wgY2FsbC4KKyAgICBjb25zdCBuZXh0TGlzdCA9IHJlcXVlc3RzCiAgICAgICAuc2xpY2UodGVybWluYWwgKyAxLCBjYWxsZWQgPj0gMCA/IGNhbGxlZCA6IHVuZGVmaW5lZCkKLSAgICAgIC5zb21lKChyKSA9PiByLm1ldGhvZCA9PT0gJ3Rvb2xzL2xpc3QnKTsKKyAgICAgIC5maW5kKChyKSA9PiByLm1ldGhvZCA9PT0gJ3Rvb2xzL2xpc3QnKTsKKyAgICBjb25zdCByYW5QYXN0RW5kID0gbmV4dExpc3Q/LnBhcmFtcz8uY3Vyc29yICE9PSB1bmRlZmluZWQ7CiAgICAgcmV0dXJuIFsKICAgICAgIGZpcnN0ID49IDAKICAgICAgICAgPyB7Cg==
+        | base64 -d | git apply -
+
+        npm ci
+
+        npm run build
+
+        npm run check
+
+        npm test
+
+        '
