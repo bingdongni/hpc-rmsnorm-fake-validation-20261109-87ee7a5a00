@@ -1,45 +1,54 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: Validate iql-100k algorithm
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
+  policy:
+    name: IQL ${{ matrix.version }} seed ${{ matrix.seed }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+        - v1
+        - v2
+        seed:
+        - 17
+        - 37
+        - 73
     env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+      VERSION: ${{ matrix.version }}
+      SEED: ${{ matrix.seed }}
+      TRAIN_UPDATES: '100000'
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - name: Install pinned evaluation and training runtime
+      run: 'set -euo pipefail
+
+        python -m pip -q install uv
+
+        uv venv --python 3.11
+
+        uv pip install --python .venv torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+
+        uv pip install --python .venv numpy==1.26.4 h5py==3.12.1 gymnasium==1.0.0
+        gymnasium-robotics==1.3.1 mujoco==3.1.6'
+    - name: Fetch fixed data and common evaluation specification
+      run: 'set -euo pipefail
+
+        curl -fsSL --retry 3 "https://huggingface.co/datasets/farama-minari/D4RL/resolve/a0fd465d1d9d253b075d532b270e03d8fb4f46e6/antmaze/medium-play-$VERSION/data/main_data.hdf5?download=true"
+        -o /tmp/ant.h5
+
+        curl -fsSL --retry 3 "https://huggingface.co/datasets/farama-minari/D4RL/resolve/a0fd465d1d9d253b075d532b270e03d8fb4f46e6/antmaze/medium-play-v2/data/metadata.json"
+        -o /tmp/eval.json
+
+        sha256sum /tmp/ant.h5 /tmp/eval.json
+
+        echo IiIiUGFpcmVkIG9mZmxpbmUgSVFMIGNvbXBhcmlzb24gb24gdGhlIHR3byByZWNvcmRlZCBBbnRNYXplIG1lZGl1bS1wbGF5IGRhdGFzZXRzLiIiIgppbXBvcnQgY29weQppbXBvcnQganNvbgppbXBvcnQgb3MKaW1wb3J0IHN5cwoKaW1wb3J0IGd5bW5hc2l1bSBhcyBneW0KaW1wb3J0IGd5bW5hc2l1bV9yb2JvdGljcwppbXBvcnQgaDVweQppbXBvcnQgbXVqb2NvCmltcG9ydCBudW1weSBhcyBucAppbXBvcnQgdG9yY2gKZnJvbSB0b3JjaCBpbXBvcnQgbm4KCnZlcnNpb24sIGZpbGVuYW1lLCBldmFsX3NwZWMsIHNlZWQgPSBzeXMuYXJndlsxOl0Kc2VlZCA9IGludChzZWVkKQp1cGRhdGVzID0gaW50KG9zLmdldGVudigiVFJBSU5fVVBEQVRFUyIsICIyMDAwMCIpKQpybmcgPSBucC5yYW5kb20uZGVmYXVsdF9ybmcoc2VlZCkKdG9yY2gubWFudWFsX3NlZWQoc2VlZCkKdG9yY2guc2V0X251bV90aHJlYWRzKDEpCgpkZWYgZmVhdHVyZXMob2JzKToKICAgIHJldHVybiBucC5jb25jYXRlbmF0ZSgob2JzWyJvYnNlcnZhdGlvbiJdLCBvYnNbImFjaGlldmVkX2dvYWwiXSwgb2JzWyJkZXNpcmVkX2dvYWwiXSAtIG9ic1siYWNoaWV2ZWRfZ29hbCJdKSwgYXhpcz0tMSkuYXN0eXBlKCJmNCIpCgpkZWYgcmVhZCgpOgogICAgd2l0aCBoNXB5LkZpbGUoZmlsZW5hbWUsICJyIikgYXMgZjoKICAgICAgICBzdGF0ZXMgPSBucC5lbXB0eSgoMV8wMDBfMDAwLCAzMSksIGR0eXBlPSJmNCIpCiAgICAgICAgYWZ0ZXIgPSBucC5lbXB0eV9saWtlKHN0YXRlcykKICAgICAgICBhY3QgPSBucC5lbXB0eSgobGVuKHN0YXRlcyksIDgpLCBkdHlwZT0iZjQiKQogICAgICAgIHJldyA9IG5wLmVtcHR5KChsZW4oc3RhdGVzKSwgMSksIGR0eXBlPSJmNCIpCiAgICAgICAgYm9vdHN0cmFwID0gbnAuZW1wdHlfbGlrZShyZXcpCiAgICAgICAgcG9zID0gMAogICAgICAgIGZvciBrIGluIHNvcnRlZCgoayBmb3IgayBpbiBmIGlmIGsuc3RhcnRzd2l0aCgiZXBpc29kZV8iKSksa2V5PWxhbWJkYSBzOmludChzLnNwbGl0KCJfIilbLTFdKSk6CiAgICAgICAgICAgIGVwID0gZltrXQogICAgICAgICAgICBvYnMgPSBmZWF0dXJlcyh7a2V5OnZbOl0gZm9yIGtleSx2IGluIGVwWyJvYnNlcnZhdGlvbnMiXS5pdGVtcygpfSkKICAgICAgICAgICAgbiA9IGxlbihlcFsiYWN0aW9ucyJdKQogICAgICAgICAgICBzbCA9IHNsaWNlKHBvcyxwb3MrbikKICAgICAgICAgICAgYXNzZXJ0IG9icy5zaGFwZSA9PSAobisxLDMxKQogICAgICAgICAgICBzdGF0ZXNbc2xdLGFmdGVyW3NsXSxhY3Rbc2xdID0gb2JzWzotMV0sb2JzWzE6XSxlcFsiYWN0aW9ucyJdWzpdCiAgICAgICAgICAgIHJld1tzbCwwXSA9IGVwWyJyZXdhcmRzIl1bOl0ucmVzaGFwZSgtMSkgLSAxCiAgICAgICAgICAgIGJvb3RzdHJhcFtzbCwwXSA9IDEgLSBlcFsidGVybWluYXRpb25zIl1bOl0ucmVzaGFwZSgtMSkuYXN0eXBlKCJmNCIpCiAgICAgICAgICAgIHBvcyArPSBuCiAgICAgICAgYXNzZXJ0IHBvcyA9PSBsZW4oc3RhdGVzKQogICAgbXUgPSBucC5tZWFuKHN0YXRlcyxheGlzPTAsZHR5cGU9ImY4IikuYXN0eXBlKCJmNCIpCiAgICBzZCA9IG5wLnN0ZChzdGF0ZXMsYXhpcz0wLGR0eXBlPSJmOCIpLmFzdHlwZSgiZjQiKS5jbGlwKDFlLTMpCiAgICBmb3IgeCBpbiAoc3RhdGVzLCBhZnRlcik6CiAgICAgICAgeCAtPSBtdQogICAgICAgIHggLz0gc2QKICAgIHJldHVybiBbdG9yY2guZnJvbV9udW1weSh4KSBmb3IgeCBpbiAoc3RhdGVzLGFjdCxyZXcsYWZ0ZXIsYm9vdHN0cmFwKV0sbXUsc2QKCmRlZiBuZXQobl9pbiwgbl9vdXQsIHRhbmg9RmFsc2UpOgogICAgbGF5ZXJzID0gW25uLkxpbmVhcihuX2luLDEyOCksbm4uUmVMVSgpLG5uLkxpbmVhcigxMjgsMTI4KSxubi5SZUxVKCksbm4uTGluZWFyKDEyOCxuX291dCldCiAgICByZXR1cm4gbm4uU2VxdWVudGlhbCgqbGF5ZXJzLCooW25uLlRhbmgoKV0gaWYgdGFuaCBlbHNlIFtdKSkKCmRlZiB1cGRhdGUob3B0LGxvc3MpOgogICAgb3B0Lnplcm9fZ3JhZChzZXRfdG9fbm9uZT1UcnVlKQogICAgbG9zcy5iYWNrd2FyZCgpCiAgICBvcHQuc3RlcCgpCgpneW0ucmVnaXN0ZXJfZW52cyhneW1uYXNpdW1fcm9ib3RpY3MpCndpdGggb3BlbihldmFsX3NwZWMpIGFzIGY6CiAgICBzcGVjPWpzb24ubG9hZHMoanNvbi5sb2FkKGYpWyJldmFsX2Vudl9zcGVjIl0pCmFzc2VydCBzcGVjWyJpZCJdPT0iQW50TWF6ZV9NZWRpdW0tdjQiIGFuZCBzcGVjWyJrd2FyZ3MiXVsiY29udGludWluZ190YXNrIl0gaXMgRmFsc2UKZ3ltLnJlZ2lzdGVyKGlkPSJNaW5hcmlQYWlyZWRBbnQtdjAiLGVudHJ5X3BvaW50PXNwZWNbImVudHJ5X3BvaW50Il0sa3dhcmdzPXNwZWNbImt3YXJncyJdLG1heF9lcGlzb2RlX3N0ZXBzPTEwMDApCmVudj1neW0ubWFrZSgiTWluYXJpUGFpcmVkQW50LXYwIikKYXJyYXlzLG1lYW4sc3RkPXJlYWQoKQphY3Rvcj1uZXQoMzEsOCxUcnVlKQp2PW5ldCgzMSwxKQpxMSxxMj1uZXQoMzksMSksbmV0KDM5LDEpCnRhcmdldHM9W2NvcHkuZGVlcGNvcHkocSkucmVxdWlyZXNfZ3JhZF8oRmFsc2UpIGZvciBxIGluIChxMSxxMildCm9hLG92LG9xPVt0b3JjaC5vcHRpbS5BZGFtKHBzLGxyPTNlLTQpIGZvciBwcyBpbiAoYWN0b3IucGFyYW1ldGVycygpLHYucGFyYW1ldGVycygpLFsqcTEucGFyYW1ldGVycygpLCpxMi5wYXJhbWV0ZXJzKCldKV0KZGVmIGV2YWx1YXRlKCk6CiAgICByb3dzPVtdCiAgICB3aXRoIHRvcmNoLm5vX2dyYWQoKToKICAgICAgICBmb3IgZXBpc29kZV9zZWVkIGluIHJhbmdlKDIxMDAwLDIxMDMwKToKICAgICAgICAgICAgb2JzLF89ZW52LnJlc2V0KHNlZWQ9ZXBpc29kZV9zZWVkKQogICAgICAgICAgICBzdGFydD1mbG9hdChucC5saW5hbGcubm9ybShvYnNbImFjaGlldmVkX2dvYWwiXS1vYnNbImRlc2lyZWRfZ29hbCJdKSkKICAgICAgICAgICAgYmVzdD1zdGFydAogICAgICAgICAgICBmb3IgdCBpbiByYW5nZSgxLDEwMDEpOgogICAgICAgICAgICAgICAgYT1hY3Rvcih0b3JjaC5mcm9tX251bXB5KChmZWF0dXJlcyhvYnMpLW1lYW4pL3N0ZCkpLm51bXB5KCkKICAgICAgICAgICAgICAgIG9icyxfLHRlcm1pbmFsLHRpbWVvdXQsaW5mbz1lbnYuc3RlcChhKQogICAgICAgICAgICAgICAgZGlzdD1mbG9hdChucC5saW5hbGcubm9ybShvYnNbImFjaGlldmVkX2dvYWwiXS1vYnNbImRlc2lyZWRfZ29hbCJdKSkKICAgICAgICAgICAgICAgIGJlc3Q9bWluKGJlc3QsZGlzdCkKICAgICAgICAgICAgICAgIGlmIHRlcm1pbmFsIG9yIHRpbWVvdXQ6IGJyZWFrCiAgICAgICAgICAgIHJvd3MuYXBwZW5kKGRpY3Qoc2VlZD1lcGlzb2RlX3NlZWQsc3VjY2Vzcz1ib29sKGluZm9bInN1Y2Nlc3MiXSksc3RlcHM9dCxzdGFydD1zdGFydCxjbG9zZXN0PWJlc3QsZmluYWw9ZGlzdCkpCiAgICByZXR1cm4gcm93cwoKZm9yIHN0ZXAgaW4gcmFuZ2UoMSx1cGRhdGVzKzEpOgogICAgaWR4PXJuZy5pbnRlZ2VycygwLGxlbihhcnJheXNbMF0pLHNpemU9MjU2KQogICAgcyxhLHIsczEsbWFzaz1bYXJyW2lkeF0gZm9yIGFyciBpbiBhcnJheXNdCiAgICBzYT10b3JjaC5jYXQoKHMsYSksZGltPS0xKQogICAgd2l0aCB0b3JjaC5ub19ncmFkKCk6CiAgICAgICAgbWluX3E9dG9yY2gubWluaW11bSh0YXJnZXRzWzBdKHNhKSx0YXJnZXRzWzFdKHNhKSkKICAgICAgICBiZWxsbWFuPXIrMC45OSptYXNrKnYoczEpCiAgICBkaWZmPW1pbl9xLXYocykKICAgIHVwZGF0ZShvdiwodG9yY2gud2hlcmUoZGlmZj4wLDAuNywwLjMpKmRpZmYuc3F1YXJlKCkpLm1lYW4oKSkKICAgIHVwZGF0ZShvcSwocTEoc2EpLWJlbGxtYW4pLnNxdWFyZSgpLm1lYW4oKSsocTIoc2EpLWJlbGxtYW4pLnNxdWFyZSgpLm1lYW4oKSkKICAgIHdlaWdodHM9KGRpZmYuZGV0YWNoKCkqMykuY2xhbXAobWF4PWZsb2F0KG5wLmxvZygxMDApKSkuZXhwKCkKICAgIHVwZGF0ZShvYSwod2VpZ2h0cyowLjUqKGFjdG9yKHMpLWEpLnNxdWFyZSgpLnN1bShkaW09MSxrZWVwZGltPVRydWUpKS5tZWFuKCkpCiAgICB3aXRoIHRvcmNoLm5vX2dyYWQoKToKICAgICAgICBmb3Igc291cmNlLHRhcmdldCBpbiB6aXAoKHExLHEyKSx0YXJnZXRzKToKICAgICAgICAgICAgZm9yIHNwLHRwIGluIHppcChzb3VyY2UucGFyYW1ldGVycygpLHRhcmdldC5wYXJhbWV0ZXJzKCkpOgogICAgICAgICAgICAgICAgdHAubGVycF8oc3AsMC4wMDUpCiAgICBpZiBzdGVwJTUwMDA9PTA6CiAgICAgICAgcHJpbnQoInRyYWluaW5nIixzdGVwLGZsb2F0KGRpZmYuZGV0YWNoKCkuYWJzKCkubWVhbigpKSxmbHVzaD1UcnVlKQpyb3dzPWV2YWx1YXRlKCkKYXNzZXJ0IGFsbChucC5pc2Zpbml0ZShyWyJmaW5hbCJdKSBmb3IgciBpbiByb3dzKQpwcmludCgiUE9MSUNZX1JFU1VMVCIsanNvbi5kdW1wcyhkaWN0KGRhdGFzZXQ9dmVyc2lvbixzZWVkPXNlZWQsc3RlcHM9dXBkYXRlcyx0b3JjaD10b3JjaC5fX3ZlcnNpb25fXyxneW09Z3ltLl9fdmVyc2lvbl9fLG11am9jbz1tdWpvY28uX192ZXJzaW9uX18sZXBpc29kZXM9cm93cykpLGZsdXNoPVRydWUpCmVudi5jbG9zZSgpCg==
+        | base64 -d > /tmp/train.py'
+    - name: Train and evaluate the policy
+      run: .venv/bin/python -u /tmp/train.py "$VERSION" /tmp/ant.h5 /tmp/eval.json
+        "$SEED"
