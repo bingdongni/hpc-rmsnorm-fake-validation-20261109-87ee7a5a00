@@ -21,13 +21,15 @@ jobs:
         0\" hostalias=\"node1\"/></nodes></content></services>\nEND_FILE\nmkdir -p\
         \ app\ncat >app/hosts.xml <<'END_FILE'\n<hosts><host name=\"localhost\"><alias>node1</alias></host></hosts>\n\
         END_FILE\nmkdir -p app/schemas\ncat >app/schemas/doc.sd <<'END_FILE'\nschema\
-        \ doc {\n document doc {\n  field title type string { indexing: index | summary\n\
-        \   index: enable-bm25 }\n  field body type string { indexing: index | summary\n\
-        \   index: enable-bm25 }\n }\n field tokens type tensor<float>(d0[96]) {\n\
-        \  indexing: (input title || \"\") . \" \" . (input body || \"\") | embed\
-        \ tok | attribute | summary\n }\n fieldset all_text { fields: title, body\
-        \ }\n rank-profile retrieve { first-phase { expression: bm25(title) + bm25(body)\
-        \ } }\n}\nEND_FILE\n\ncurl -fsSL --retry 4 https://huggingface.co/cross-encoder/ms-marco-TinyBERT-L2-v2/resolve/81d1926f67cb8eee2c2be17ca9f793c7c3bd20cc/tokenizer.json\
+        \ doc {\n document doc {\n  field candidate_key type string { indexing: attribute\
+        \ | summary\n   attribute: fast-search\n   rank: filter }\n  field title type\
+        \ string { indexing: index | summary\n   index: enable-bm25 }\n  field body\
+        \ type string { indexing: index | summary\n   index: enable-bm25 }\n }\n field\
+        \ tokens type tensor<float>(d0[96]) {\n  indexing: (input title || \"\") .\
+        \ \" \" . (input body || \"\") | embed tok | attribute | summary\n }\n fieldset\
+        \ all_text { fields: title, body }\n rank-profile retrieve { first-phase {\
+        \ expression: bm25(title) + bm25(body) } }\n}\nEND_FILE\n\ncurl -fsSL --retry\
+        \ 4 https://huggingface.co/cross-encoder/ms-marco-TinyBERT-L2-v2/resolve/81d1926f67cb8eee2c2be17ca9f793c7c3bd20cc/tokenizer.json\
         \ -o app/models/tokenizer.json\ncurl -fsSL --retry 4 https://huggingface.co/cross-encoder/ms-marco-TinyBERT-L2-v2/resolve/81d1926f67cb8eee2c2be17ca9f793c7c3bd20cc/onnx/model.onnx\
         \ -o rank.onnx\ncurl -fsSL --retry 4 https://huggingface.co/datasets/BeIR/scifact/resolve/b3b5335604bf5ee3c4447671af975ea25143d4f5/corpus/corpus-00000-of-00001.parquet\
         \ -o corpus.parquet\ncurl -fsSL --retry 4 https://huggingface.co/datasets/BeIR/scifact/resolve/b3b5335604bf5ee3c4447671af975ea25143d4f5/queries/queries-00000-of-00001.parquet\
@@ -55,14 +57,18 @@ jobs:
         http://localhost:8080\"\ndocs=pq.read_table(\"corpus.parquet\").to_pylist()\n\
         queries=pq.read_table(\"queries.parquet\").to_pylist()\ndocs=docs[:2000]\n\
         def feed(d):\n    r=requests.post(f\"{server}/document/v1/test/doc/docid/{d['_id']}\"\
-        ,json={\"fields\":{\"title\":d[\"title\"],\"body\":d[\"text\"]}},timeout=60);r.raise_for_status()\n\
-        with ThreadPoolExecutor(6) as p:list(p.map(feed,docs))\ndef query(q,fields,qtokens=None):\n\
+        ,json={\"fields\":{\"candidate_key\":str(d[\"_id\"]),\"title\":d[\"title\"\
+        ],\"body\":d[\"text\"]}},timeout=60);r.raise_for_status()\nwith ThreadPoolExecutor(6)\
+        \ as p:list(p.map(feed,docs))\ndef query(q,fields,qtokens=None,fixed=None):\n\
         \    terms=re.findall(r\"[a-zA-Z]{3,}\",q.lower())[:12]\n    clauses=[f'{f}\
         \ contains \"{word}\"' for f in ('title','body') for word in terms]\n    p={\"\
         yql\":f\"select {fields} from doc where \"+' or '.join(clauses),\"ranking\"\
         :\"retrieve\",\"hits\":25,\"format.tensors\":\"short\",\"timeout\":\"20s\"\
-        }\n    if qtokens is not None:\n        p[\"ranking\"]=\"cross\"\n       \
-        \ p[\"input.query(qtokens)\"]=json.dumps(qtokens+[0]*(30-len(qtokens)))\n\
+        }\n    if qtokens is not None:\n        assert fixed and len(fixed)==25\n\
+        \        keys=[json.dumps(x[\"id\"].rsplit(\"::\",1)[-1]) for x in fixed]\n\
+        \        p[\"yql\"]=f\"select {fields} from doc where (\"+' or '.join(clauses)+\"\
+        ) and candidate_key in (\"+\",\".join(keys)+\")\"\n        p[\"ranking\"]=\"\
+        cross\"\n        p[\"input.query(qtokens)\"]=json.dumps(qtokens+[0]*(30-len(qtokens)))\n\
         \    r=requests.get(server+\"/search/\",params=p,timeout=30);r.raise_for_status()\n\
         \    result=r.json()['root']\n    if 'errors' in result:raise RuntimeError(result['errors'])\n\
         \    return result.get('children',[]),len(r.content)\ntok=Tokenizer.from_file('app/models/tokenizer.json')\n\
@@ -90,7 +96,7 @@ jobs:
         \ AssertionError((ids[k][:12],lazy[k][:12],len(ids[k]),len(lazy[k])))\n  \
         \  qids=tok.encode(q,add_special_tokens=False).ids[:30]\n    s1=pair_scores(qids,ids);s2=pair_scores(qids,lazy)\n\
         \    np.testing.assert_array_equal(s1,s2);np.testing.assert_array_equal(np.argsort(-s1,kind='stable'),np.argsort(-s2,kind='stable'))\n\
-        \    begin=time.perf_counter()\n    native,_=query(q,\"*\",qids)\n    native_time=(time.perf_counter()-begin)*1000\n\
+        \    begin=time.perf_counter()\n    native,_=query(q,\"*\",qids,b)\n    native_time=(time.perf_counter()-begin)*1000\n\
         \    actual={v[\"id\"]:v[\"relevance\"] for v in native}\n    assert actual.keys()=={v[\"\
         id\"] for v in b},(\"candidates changed\",len(actual),len(b))\n    actual=np.asarray([actual[v[\"\
         id\"]] for v in b])\n    gap=float(np.max(np.abs(actual-s2)))\n    if query_count==0:\
