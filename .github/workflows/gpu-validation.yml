@@ -60,20 +60,21 @@ jobs:
         ,json={\"fields\":{\"candidate_key\":str(d[\"_id\"]),\"title\":d[\"title\"\
         ],\"body\":d[\"text\"]}},timeout=60);r.raise_for_status()\nwith ThreadPoolExecutor(6)\
         \ as p:list(p.map(feed,docs))\ndef query(q,fields,qtokens=None,fixed=None):\n\
-        \    terms=re.findall(r\"[a-zA-Z]{3,}\",q.lower())[:12]\n    clauses=[f'{f}\
-        \ contains \"{word}\"' for f in ('title','body') for word in terms]\n    p={\"\
-        yql\":f\"select {fields} from doc where \"+' or '.join(clauses),\"ranking\"\
-        :\"retrieve\",\"hits\":25,\"format.tensors\":\"short\",\"timeout\":\"20s\"\
-        }\n    if qtokens is not None:\n        assert fixed and len(fixed)==25\n\
-        \        keys=[json.dumps(x[\"id\"].rsplit(\"::\",1)[-1]) for x in fixed]\n\
-        \        p[\"yql\"]=f\"select {fields} from doc where (\"+' or '.join(clauses)+\"\
-        ) and candidate_key in (\"+\",\".join(keys)+\")\"\n        p[\"ranking\"]=\"\
-        cross\"\n        p[\"input.query(qtokens)\"]=json.dumps(qtokens+[0]*(30-len(qtokens)))\n\
-        \    r=requests.get(server+\"/search/\",params=p,timeout=30);r.raise_for_status()\n\
-        \    result=r.json()['root']\n    if 'errors' in result:raise RuntimeError(result['errors'])\n\
-        \    return result.get('children',[]),len(r.content)\ntok=Tokenizer.from_file('app/models/tokenizer.json')\n\
-        tok.no_padding();tok.no_truncation()\noptions=ort.SessionOptions();options.intra_op_num_threads=2\n\
-        model=ort.InferenceSession('rank.onnx',sess_options=options,providers=['CPUExecutionProvider'])\n\
+        \    if fields!=\"*\": fields+=\",candidate_key\"\n    terms=re.findall(r\"\
+        [a-zA-Z]{3,}\",q.lower())[:12]\n    clauses=[f'{f} contains \"{word}\"' for\
+        \ f in ('title','body') for word in terms]\n    p={\"yql\":f\"select {fields}\
+        \ from doc where \"+' or '.join(clauses),\"ranking\":\"retrieve\",\"hits\"\
+        :25,\"format.tensors\":\"short\",\"timeout\":\"20s\"}\n    if qtokens is not\
+        \ None:\n        assert fixed and len(fixed)==25\n        keys=[json.dumps(x[\"\
+        fields\"][\"candidate_key\"]) for x in fixed]\n        p[\"yql\"]=f\"select\
+        \ {fields} from doc where (\"+' or '.join(clauses)+\") and candidate_key in\
+        \ (\"+\",\".join(keys)+\")\"\n        p[\"ranking\"]=\"cross\"\n        p[\"\
+        input.query(qtokens)\"]=json.dumps(qtokens+[0]*(30-len(qtokens)))\n    r=requests.get(server+\"\
+        /search/\",params=p,timeout=30);r.raise_for_status()\n    result=r.json()['root']\n\
+        \    if 'errors' in result:raise RuntimeError(result['errors'])\n    hits=result.get('children',[])\n\
+        \    for v in hits:v['id']=v['fields']['candidate_key']\n    return hits,len(r.content)\n\
+        tok=Tokenizer.from_file('app/models/tokenizer.json')\ntok.no_padding();tok.no_truncation()\n\
+        options=ort.SessionOptions();options.intra_op_num_threads=2\nmodel=ort.InferenceSession('rank.onnx',sess_options=options,providers=['CPUExecutionProvider'])\n\
         def pair_scores(qids,ds):\n    seqs=[];types=[]\n    for d in ds:\n      \
         \  seq=[101]+qids+[102]+d[:126-len(qids)-1]+[102]\n        seg=[0]*(len(qids)+2)+[1]*(len(seq)-len(qids)-2)\n\
         \        seqs.append(seq);types.append(seg)\n    length=max(map(len,seqs))\n\
@@ -98,12 +99,13 @@ jobs:
         \    np.testing.assert_array_equal(s1,s2);np.testing.assert_array_equal(np.argsort(-s1,kind='stable'),np.argsort(-s2,kind='stable'))\n\
         \    begin=time.perf_counter()\n    native,_=query(q,\"*\",qids,b)\n    native_time=(time.perf_counter()-begin)*1000\n\
         \    actual={v[\"id\"]:v[\"relevance\"] for v in native}\n    assert actual.keys()=={v[\"\
-        id\"] for v in b},(\"candidates changed\",len(actual),len(b))\n    actual=np.asarray([actual[v[\"\
-        id\"]] for v in b])\n    gap=float(np.max(np.abs(actual-s2)))\n    if query_count==0:\
-        \ print(\"SCORES\",actual[:5],s2[:5],flush=True)\n    def arr(d,k):\n    \
-        \    v=d[k] if k in d else d[\"rankingExpression(\"+k+\")\"]\n        return\
-        \ np.array(v.get(\"values\",v) if isinstance(v,dict) else v,dtype=np.int64).reshape(128)\n\
-        \    # Audit actual native transformer inputs by document id against an independently\n\
+        id\"] for v in b},(\"candidates changed\",list(actual)[:4], [v[\"id\"] for\
+        \ v in b][:4])\n    actual=np.asarray([actual[v[\"id\"]] for v in b])\n  \
+        \  gap=float(np.max(np.abs(actual-s2)))\n    if query_count==0: print(\"SCORES\"\
+        ,actual[:5],s2[:5],flush=True)\n    def arr(d,k):\n        v=d[k] if k in\
+        \ d else d[\"rankingExpression(\"+k+\")\"]\n        return np.array(v.get(\"\
+        values\",v) if isinstance(v,dict) else v,dtype=np.int64).reshape(128)\n  \
+        \  # Audit actual native transformer inputs by document id against an independently\n\
         \    # constructed pair from the query and the raw document text.\n    by_id={hit[\"\
         id\"]:hit[\"fields\"][\"matchfeatures\"] for hit in native}\n    native_data={k:[]\
         \ for k in (\"input_ids\",\"attention_mask\",\"token_type_ids\")}\n    for\
