@@ -39,16 +39,18 @@ jobs:
         \ >/dev/null; then break; fi; sleep 2; done"
     - name: Compare candidates, tokens and cross-encoder scores
       run: "python - <<'PY'\nfrom concurrent.futures import ThreadPoolExecutor\nimport\
-        \ os,time,statistics,json\nfrom pathlib import Path\nimport numpy as np,requests,onnxruntime\
+        \ os,time,statistics,json,re\nfrom pathlib import Path\nimport numpy as np,requests,onnxruntime\
         \ as ort,pyarrow.parquet as pq\nfrom tokenizers import Tokenizer\n\nserver=\"\
         http://localhost:8080\"\ndocs=pq.read_table(\"corpus.parquet\").to_pylist()\n\
         queries=pq.read_table(\"queries.parquet\").to_pylist()\ndocs=docs[:2000]\n\
         def feed(d):\n    r=requests.post(f\"{server}/document/v1/test/doc/docid/{d['_id']}\"\
         ,json={\"fields\":{\"title\":d[\"title\"],\"body\":d[\"text\"]}},timeout=60);r.raise_for_status()\n\
         with ThreadPoolExecutor(6) as p:list(p.map(feed,docs))\ndef query(q,fields):\n\
-        \    p={\"yql\":f\"select {fields} from doc where userInput(@q)\",\"q\":q,\"\
-        default-index\":\"all_text\",\"ranking\":\"retrieve\",\"hits\":25,\"format.tensors\"\
-        :\"short\",\"timeout\":\"20s\"}\n    r=requests.get(server+\"/search/\",params=p,timeout=30);r.raise_for_status()\n\
+        \    terms=re.findall(r\"[a-zA-Z]{3,}\",q.lower())[:12]\n    clauses=[f'{f}\
+        \ contains \"{word}\"' for f in ('title','body') for word in terms]\n    p={\"\
+        yql\":f\"select {fields} from doc where \"+' or '.join(clauses),\"ranking\"\
+        :\"retrieve\",\"hits\":25,\"format.tensors\":\"short\",\"timeout\":\"20s\"\
+        }\n    r=requests.get(server+\"/search/\",params=p,timeout=30);r.raise_for_status()\n\
         \    result=r.json()['root']\n    if 'errors' in result:raise RuntimeError(result['errors'])\n\
         \    return result.get('children',[]),len(r.content)\ntok=Tokenizer.from_file('app/models/tokenizer.json')\n\
         tok.no_padding();tok.no_truncation()\noptions=ort.SessionOptions();options.intra_op_num_threads=2\n\
@@ -76,5 +78,6 @@ jobs:
         \    np.testing.assert_array_equal(s1,s2);np.testing.assert_array_equal(np.argsort(-s1,kind='stable'),np.argsort(-s2,kind='stable'))\n\
         \    if query_count>=2:\n        for i in order: wire[i].append(results[i][1]);times[i].append(results[i][2]*1000)\n\
         \        toks.append(elapsed*1000);candidate_count+=len(a)\n    query_count+=1\n\
-        \    if query_count==22:break\nassert len(toks)==20\nprint(\"RESULT\",json.dumps(dict(docs=len(docs),queries=len(toks),candidate_pairs=candidate_count,equal_tokens_logits_and_rank=True,tokenization_ms_p95=np.percentile(toks,95),stored_summary_http_ms_p95=np.percentile(times[0],95),text_summary_http_ms_p95=np.percentile(times[1],95),stored_summary_mean_bytes=statistics.mean(wire[0]),text_summary_mean_bytes=statistics.mean(wire[1]),dense_payload_bytes_per_doc=96*4)),flush=True)\n\
+        \    if query_count==22:break\nassert len(toks)==20, (len(toks),len(docs),len(queries))\n\
+        print(\"RESULT\",json.dumps(dict(docs=len(docs),queries=len(toks),candidate_pairs=candidate_count,equal_tokens_logits_and_rank=True,tokenization_ms_p95=np.percentile(toks,95),stored_summary_http_ms_p95=np.percentile(times[0],95),text_summary_http_ms_p95=np.percentile(times[1],95),stored_summary_mean_bytes=statistics.mean(wire[0]),text_summary_mean_bytes=statistics.mean(wire[1]),dense_payload_bytes_per_doc=96*4)),flush=True)\n\
         \nPY"
