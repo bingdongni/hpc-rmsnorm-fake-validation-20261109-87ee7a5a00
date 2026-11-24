@@ -1,45 +1,53 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: Validate fci-order algorithm
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
 jobs:
   test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
-    env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+    name: fci-order
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: py-why/causal-learn
+        ref: 0dacacf36390e3084704636bc3c36e82e35ee0cc
+        persist-credentials: false
+    - name: Apply verified change
+      shell: bash
+      run: 'set -euo pipefail
+
+        echo ZGlmZiAtLWdpdCBhL2NhdXNhbGxlYXJuL3NlYXJjaC9Db25zdHJhaW50QmFzZWQvRkNJLnB5IGIvY2F1c2FsbGVhcm4vc2VhcmNoL0NvbnN0cmFpbnRCYXNlZC9GQ0kucHkKaW5kZXggODY5YjhkZS4uNmMyMzcyNyAxMDA2NDQKLS0tIGEvY2F1c2FsbGVhcm4vc2VhcmNoL0NvbnN0cmFpbnRCYXNlZC9GQ0kucHkKKysrIGIvY2F1c2FsbGVhcm4vc2VhcmNoL0NvbnN0cmFpbnRCYXNlZC9GQ0kucHkKQEAgLTEwMTMsMTAgKzEwMTMsNyBAQCBkZWYgcmVtb3ZlQnlQb3NzaWJsZURzZXAoZ3JhcGg6IEdyYXBoLCBpbmRlcGVuZGVuY2VfdGVzdF9tZXRob2Q6IENJVCwgYWxwaGE6IGZsbwogICAgICAgICBwb3NzaWJsZURzZXAgPSBnZXRQb3NzaWJsZURzZXAobm9kZV9hLCBub2RlX2IsIGdyYXBoLCAtMSkKICAgICAgICAgZ2VuID0gRGVwdGhDaG9pY2VHZW5lcmF0b3IobGVuKHBvc3NpYmxlRHNlcCksIGxlbihwb3NzaWJsZURzZXApKQogCi0gICAgICAgIGNob2ljZSA9IGdlbi5uZXh0KCkKLSAgICAgICAgd2hpbGUgY2hvaWNlIGlzIG5vdCBOb25lOgotICAgICAgICAgICAgb3JpZ2luX2Nob2ljZSA9IGNob2ljZQotICAgICAgICAgICAgY2hvaWNlID0gZ2VuLm5leHQoKQorICAgICAgICBmb3Igb3JpZ2luX2Nob2ljZSBpbiBpdGVyKGdlbi5uZXh0LCBOb25lKToKICAgICAgICAgICAgIGlmIGxlbihvcmlnaW5fY2hvaWNlKSA8IDI6CiAgICAgICAgICAgICAgICAgY29udGludWUKICAgICAgICAgICAgIHNlcHNldCA9IHR1cGxlKFtwb3NzaWJsZURzZXBbaW5kZXhdIGZvciBpbmRleCBpbiBvcmlnaW5fY2hvaWNlXSkKQEAgLTEwMzAsMTcgKzEwMjcsMTQgQEAgZGVmIHJlbW92ZUJ5UG9zc2libGVEc2VwKGdyYXBoOiBHcmFwaCwgaW5kZXBlbmRlbmNlX3Rlc3RfbWV0aG9kOiBDSVQsIGFscGhhOiBmbG8KICAgICAgICAgICAgIGluZGVwZW5kZW50ID0gcF92YWx1ZSA+IGFscGhhCiAgICAgICAgICAgICBpZiBpbmRlcGVuZGVudDoKICAgICAgICAgICAgICAgICBncmFwaC5yZW1vdmVfZWRnZShlZGdlKQotICAgICAgICAgICAgICAgIHNlcF9zZXRzWyhYLCBZKV0gPSBzZXQoY29uZFNldF9pbmRleCkKKyAgICAgICAgICAgICAgICBzZXBfc2V0c1soWCwgWSldID0gc2VwX3NldHNbKFksIFgpXSA9IHNldChjb25kU2V0X2luZGV4KQogICAgICAgICAgICAgICAgIGJyZWFrCiAKICAgICAgICAgaWYgZ3JhcGguY29udGFpbnNfZWRnZShlZGdlKToKICAgICAgICAgICAgIHBvc3NpYmxlRHNlcCA9IGdldFBvc3NpYmxlRHNlcChub2RlX2IsIG5vZGVfYSwgZ3JhcGgsIC0xKQogICAgICAgICAgICAgZ2VuID0gRGVwdGhDaG9pY2VHZW5lcmF0b3IobGVuKHBvc3NpYmxlRHNlcCksIGxlbihwb3NzaWJsZURzZXApKQogCi0gICAgICAgICAgICBjaG9pY2UgPSBnZW4ubmV4dCgpCi0gICAgICAgICAgICB3aGlsZSBjaG9pY2UgaXMgbm90IE5vbmU6Ci0gICAgICAgICAgICAgICAgb3JpZ2luX2Nob2ljZSA9IGNob2ljZQotICAgICAgICAgICAgICAgIGNob2ljZSA9IGdlbi5uZXh0KCkKKyAgICAgICAgICAgIGZvciBvcmlnaW5fY2hvaWNlIGluIGl0ZXIoZ2VuLm5leHQsIE5vbmUpOgogICAgICAgICAgICAgICAgIGlmIGxlbihvcmlnaW5fY2hvaWNlKSA8IDI6CiAgICAgICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgICAgICAgc2Vwc2V0ID0gdHVwbGUoW3Bvc3NpYmxlRHNlcFtpbmRleF0gZm9yIGluZGV4IGluIG9yaWdpbl9jaG9pY2VdKQpAQCAtMTA1NCw3ICsxMDQ4LDcgQEAgZGVmIHJlbW92ZUJ5UG9zc2libGVEc2VwKGdyYXBoOiBHcmFwaCwgaW5kZXBlbmRlbmNlX3Rlc3RfbWV0aG9kOiBDSVQsIGFscGhhOiBmbG8KICAgICAgICAgICAgICAgICBpbmRlcGVuZGVudCA9IHBfdmFsdWUgPiBhbHBoYQogICAgICAgICAgICAgICAgIGlmIGluZGVwZW5kZW50OgogICAgICAgICAgICAgICAgICAgICBncmFwaC5yZW1vdmVfZWRnZShlZGdlKQotICAgICAgICAgICAgICAgICAgICBzZXBfc2V0c1soWCwgWSldID0gc2V0KGNvbmRTZXRfaW5kZXgpCisgICAgICAgICAgICAgICAgICAgIHNlcF9zZXRzWyhYLCBZKV0gPSBzZXBfc2V0c1soWSwgWCldID0gc2V0KGNvbmRTZXRfaW5kZXgpCiAgICAgICAgICAgICAgICAgICAgIGJyZWFrCiAKIApkaWZmIC0tZ2l0IGEvdGVzdHMvVGVzdEZDSS5weSBiL3Rlc3RzL1Rlc3RGQ0kucHkKaW5kZXggZTJmYjY4My4uMGUyOTNhZCAxMDA2NDQKLS0tIGEvdGVzdHMvVGVzdEZDSS5weQorKysgYi90ZXN0cy9UZXN0RkNJLnB5CkBAIC02NSw2ICs2NSwxOSBAQCBkZWYgZ2VuX2NvZWYoKToKIAogCiBjbGFzcyBUZXN0RkNJKHVuaXR0ZXN0LlRlc3RDYXNlKToKKyAgICBkZWYgdGVzdF9wb3NzaWJsZV9kc2VwX2NvbGxpZGVyKHNlbGYpOgorICAgICAgICAjIFggYW5kIFkgc2VwYXJhdGUgZ2l2ZW4ge1UsIFYsIFp9LiBPbmNlIHRoZWlyIGVkZ2UgaXMgcmVtb3ZlZCwKKyAgICAgICAgIyBYIC0+IEMgPC0gWSBpcyB1bnNoaWVsZGVkLiBUIGFuZCBXIGFyZSBsYXRlbnQgY29tbW9uIGNhdXNlcy4KKyAgICAgICAgVCwgVyA9IDcsIDgKKyAgICAgICAgZm9yIFUsIFosIFgsIEMsIEQsIFYsIFkgaW4gWygwLCAxLCAyLCAzLCA0LCA1LCA2KSwgKDQsIDMsIDIsIDAsIDEsIDYsIDUpXToKKyAgICAgICAgICAgIGRhZyA9IERpR3JhcGgoWyhULCBVKSwgKFQsIFgpLCAoVywgViksIChXLCBZKSwgKFosIFUpLCAoWiwgViksCisgICAgICAgICAgICAgICAgICAgICAgICAgICAoVSwgWSksIChWLCBYKSwgKFgsIEMpLCAoWSwgQyksIChELCBYKV0pCisgICAgICAgICAgICBncmFwaCwgXyA9IGZjaShucC56ZXJvcygoMTAsIDcpKSwgZF9zZXBhcmF0aW9uLCB0cnVlX2RhZz1kYWcsIHNob3dfcHJvZ3Jlc3M9RmFsc2UpCisgICAgICAgICAgICBub2RlcyA9IGdyYXBoLmdldF9ub2RlcygpCisgICAgICAgICAgICBzZWxmLmFzc2VydEZhbHNlKGdyYXBoLmlzX2FkamFjZW50X3RvKG5vZGVzW1hdLCBub2Rlc1tZXSkpCisgICAgICAgICAgICBzZWxmLmFzc2VydEVxdWFsKGdyYXBoLmdldF9lbmRwb2ludChub2Rlc1tYXSwgbm9kZXNbQ10pLCBFbmRwb2ludC5BUlJPVykKKyAgICAgICAgICAgIHNlbGYuYXNzZXJ0RXF1YWwoZ3JhcGguZ2V0X2VuZHBvaW50KG5vZGVzW1ldLCBub2Rlc1tDXSksIEVuZHBvaW50LkFSUk9XKQorCiAgICAgZGVmIHRlc3Rfc2ltcGxlX3Rlc3Qoc2VsZik6CiAgICAgICAgIGRhdGEgPSBucC5lbXB0eShzaGFwZT0oMCwgNCkpCiAgICAgICAgIHRydWVfZGFnID0gRGlHcmFwaCgpCg==
+        | base64 -d | git apply -
+
+        git diff --check'
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Run tests
+      shell: bash
+      run: 'set -euo pipefail
+
+        export PYTHONHASHSEED=23 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MPLBACKEND=Agg
+
+        sudo apt-get install -y graphviz libgraphviz-dev
+
+        python -m pip install -q -e . pytest pygraphviz
+
+        echo ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBvcywgc3VicHJvY2Vzcywgc3lzLCB0ZW1wZmlsZSwgeG1sLmV0cmVlLkVsZW1lbnRUcmVlIGFzIEVUCmJhc2U9UGF0aCgnL3RtcC91cHN0cmVhbS1mY2knKQpzdWJwcm9jZXNzLnJ1bihbJ2dpdCcsJ3dvcmt0cmVlJywnYWRkJywnLS1xdWlldCcsJy0tZGV0YWNoJyxzdHIoYmFzZSksJ0hFQUQnXSxjaGVjaz1UcnVlKQpkZWYgcnVuKHBhdGgsIHN1aXRlLCBsYWJlbCk6CiAgICB4bWw9UGF0aCgnL3RtcCcpL2Yne2xhYmVsfS17c3VpdGV9LnhtbCcKICAgIHJlc3VsdD1zdWJwcm9jZXNzLnJ1bihbc3lzLmV4ZWN1dGFibGUsJy1tJywncHl0ZXN0JywnLXEnLCctLWRpc2FibGUtd2FybmluZ3MnLCctLXRiPXNob3J0JyxmJy0tanVuaXR4bWw9e3htbH0nLGYndGVzdHMve3N1aXRlfS5weSddLGN3ZD1wYXRoKQogICAgcm9vdD1FVC5wYXJzZSh4bWwpOyB0ZXN0cz1yb290LmZpbmRhbGwoJy4vL3Rlc3RjYXNlJykKICAgIGZhaWxlZD17dC5nZXQoJ25hbWUnKSBmb3IgdCBpbiB0ZXN0cyBpZiB0LmZpbmQoJ2ZhaWx1cmUnKSBpcyBub3QgTm9uZSBvciB0LmZpbmQoJ2Vycm9yJykgaXMgbm90IE5vbmV9CiAgICBhc3NlcnQgdGVzdHMgYW5kIChyZXN1bHQucmV0dXJuY29kZT09MCBvciBmYWlsZWQpCiAgICByZXR1cm4gbGVuKHRlc3RzKSxmYWlsZWQKZm9yIHN1aXRlIGluIFsnVGVzdEZDSScsJ1Rlc3REQUcyUEFHJywnVGVzdEZBUyddOgogICAgbmIsZmI9cnVuKGJhc2Usc3VpdGUsJ2Jhc2VsaW5lJykKICAgIG5wXyxmcD1ydW4oUGF0aC5jd2QoKSxzdWl0ZSwnY2hhbmdlJykKICAgIGFzc2VydCBmYj09ZnAsKHN1aXRlLGZiLGZwKQogICAgcHJpbnQoJ1JFU1VMVCcsc3VpdGUsJ2Jhc2VsaW5lJyxuYiwncGF0Y2hlZCcsbnBfLCdzYW1lIHByZS1leGlzdGluZyBmYWlsdXJlL2NvbGxlY3Rpb24gbmFtZXMnLHNvcnRlZChmcCksZmx1c2g9VHJ1ZSkKICAgIGlmIHN1aXRlPT0nVGVzdEZDSSc6CiAgICAgICAgYXNzZXJ0IG5wXz09bmIrMSBhbmQgZnAgPD0geyd0ZXN0X2JubGVhcm5fZGlzY3JldGVfZGF0YXNldHMnLCd0ZXN0X2NvbnRpbnVvdXNfZGF0YXNldCd9CiAgICBpZiBzdWl0ZT09J1Rlc3REQUcyUEFHJzphc3NlcnQgbm90IGZwCiAgICBpZiBzdWl0ZT09J1Rlc3RGQVMnOmFzc2VydCBsZW4oZnApPD0xCg0K
+        | base64 -d > /tmp/fci-suite.py
+
+        python /tmp/fci-suite.py
+
+        echo ZnJvbSBpdGVydG9vbHMgaW1wb3J0IHBlcm11dGF0aW9ucwppbXBvcnQgY29udGV4dGxpYiwgaW8KaW1wb3J0IG51bXB5IGFzIG5wCmltcG9ydCBuZXR3b3JreCBhcyBueApmcm9tIGNhdXNhbGxlYXJuLmdyYXBoLkVuZHBvaW50IGltcG9ydCBFbmRwb2ludApmcm9tIGNhdXNhbGxlYXJuLnNlYXJjaC5Db25zdHJhaW50QmFzZWQuRkNJIGltcG9ydCBmY2kKCnJuZz1ucC5yYW5kb20uZGVmYXVsdF9ybmcoNDIpCmZvciBfIGluIHJhbmdlKDk2KToKICAgIHUseix4LGMsZCx2LHk9cm5nLnBlcm11dGF0aW9uKDcpLnRvbGlzdCgpCiAgICB0LHc9Nyw4CiAgICBkYWc9bnguRGlHcmFwaChbKHQsdSksKHQseCksKHcsdiksKHcseSksKHosdSksKHosdiksKHUseSksKHYseCksKHgsYyksKHksYyksKGQseCldKQogICAgYXNzZXJ0IG54LmlzX2Rfc2VwYXJhdG9yKGRhZyx7eH0se3l9LHt1LHYsen0pCiAgICBhc3NlcnQgbm90IG54LmlzX2Rfc2VwYXJhdG9yKGRhZyx7eH0se3l9LHt1LHYseixjfSkKICAgIHdpdGggY29udGV4dGxpYi5yZWRpcmVjdF9zdGRvdXQoaW8uU3RyaW5nSU8oKSk6CiAgICAgICAgZ3JhcGgsXz1mY2kobnAuemVyb3MoKDEwLDcpKSwnZF9zZXBhcmF0aW9uJyx0cnVlX2RhZz1kYWcsc2hvd19wcm9ncmVzcz1GYWxzZSkKICAgIG49Z3JhcGguZ2V0X25vZGVzKCkKICAgIGFzc2VydCBub3QgZ3JhcGguaXNfYWRqYWNlbnRfdG8oblt4XSxuW3ldKQogICAgYXNzZXJ0IGdyYXBoLmdldF9lbmRwb2ludChuW3hdLG5bY10pPT1ncmFwaC5nZXRfZW5kcG9pbnQoblt5XSxuW2NdKT09RW5kcG9pbnQuQVJST1cKcHJpbnQoJ1JFU1VMVCA5NiBzZWVkZWQgbm9kZSBvcmRlcmluZ3MsIGQtc2VwYXJhdGlvbiBvcmFjbGUgYW5kIGJvdGggY29sbGlkZXIgYXJyb3doZWFkcyBhZ3JlZS4nKQ0K
+        | base64 -d > /tmp/fci-permute.py
+
+        python /tmp/fci-permute.py
+
+        echo IiIiQ29tcGFyZSBwdWJsaXNoZWQgYmVuY2htYXJrcyB1c2luZyBwcmlzdGluZSB2ZXJzdXMgcGF0Y2hlZCBGQ0kgb24gdGhlIHNhbWUgZGF0YS4iIiIKaW1wb3J0IGNvbnRleHRsaWIsIGlvLCBzdWJwcm9jZXNzCmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aAppbXBvcnQgbnVtcHkgYXMgbnAKZnJvbSBjYXVzYWxsZWFybi5zZWFyY2guQ29uc3RyYWludEJhc2VkIGltcG9ydCBGQ0kKYmFzZT1zdWJwcm9jZXNzLmNoZWNrX291dHB1dChbJ2dpdCcsJ3Nob3cnLCdIRUFEOmNhdXNhbGxlYXJuL3NlYXJjaC9Db25zdHJhaW50QmFzZWQvRkNJLnB5J10pLmRlY29kZSgpCnNjb3BlPXt9O2E9YmFzZS5pbmRleCgnZGVmIHJlbW92ZUJ5UG9zc2libGVEc2VwKCcpO2I9YmFzZS5pbmRleCgnZGVmIGZjaSgnLGEpCmV4ZWMoYmFzZVthOmJdLHZhcnMoRkNJKSxzY29wZSkKcGF0Y2hlZD1GQ0kucmVtb3ZlQnlQb3NzaWJsZURzZXAKcmVjb3Jkcz1bXQpmb3IgbmFtZSBpbiBbJ2FzaWEnLCdjYW5jZXInLCdlYXJ0aHF1YWtlJywnc2FjaHMnLCdzdXJ2ZXknLCdhbGFybScsJ2xpbmVhcl8xMCddOgogaWYgbmFtZT09J2xpbmVhcl8xMCc6CiAgICBkYXRhPSd0ZXN0cy9kYXRhX2xpbmVhcl8xMC50eHQnO2V4cGVjdGVkPSdsaW5lYXJfMTBfZmNpX2Zpc2hlcnpfMC4wNSc7Y2k9J2Zpc2hlcnonCiBlbHNlOgogICAgZGF0YT1mJ3Rlc3RzL1Rlc3REYXRhL2JubGVhcm5fZGlzY3JldGVfMTAwMDAvZGF0YS97bmFtZX0udHh0JztleHBlY3RlZD1mJ2JubGVhcm5fZGlzY3JldGVfMTAwMDBfe25hbWV9X2ZjaV9jaGlzcV8wLjA1JztjaT0nY2hpc3EnCiB4PW5wLmxvYWR0eHQoZGF0YSxza2lwcm93cz0xKTtyZWY9bnAubG9hZHR4dChmJ3Rlc3RzL1Rlc3REYXRhL2JlbmNobWFya19yZXR1cm5lZF9yZXN1bHRzL3tleHBlY3RlZH0udHh0JykKIGdyYXBocz1bXQogZm9yIGYgaW4gKHNjb3BlWydyZW1vdmVCeVBvc3NpYmxlRHNlcCddLHBhdGNoZWQpOgogICAgRkNJLnJlbW92ZUJ5UG9zc2libGVEc2VwPWYKICAgIHdpdGggY29udGV4dGxpYi5yZWRpcmVjdF9zdGRvdXQoaW8uU3RyaW5nSU8oKSk6IGdyYXBocy5hcHBlbmQoRkNJLmZjaSh4LGNpLDAuMDUsc2hvd19wcm9ncmVzcz1GYWxzZSlbMF0uZ3JhcGgpCiBwcmludCgnRklYVFVSRScsbmFtZSwnYmFzZSB2cyBzbmFwc2hvdCcsbnAuc3VtKGdyYXBoc1swXSE9cmVmKSwncGF0Y2ggdnMgc25hcHNob3QnLG5wLnN1bShncmFwaHNbMV0hPXJlZiksJ2Jhc2UgdnMgcGF0Y2gnLG5wLnN1bShncmFwaHNbMF0hPWdyYXBoc1sxXSksZmx1c2g9VHJ1ZSkKIGlmIG5vdCBucC5hcnJheV9lcXVhbChncmFwaHNbMF0sZ3JhcGhzWzFdKToKICAgIHByaW50KCdDSEFOR0VEJyxuYW1lLG5wLmFyZ3doZXJlKGdyYXBoc1swXSE9Z3JhcGhzWzFdKS50b2xpc3QoKSkKDQo=
+        | base64 -d > /tmp/fci-fixtures.py
+
+        python /tmp/fci-fixtures.py
+
+        '
