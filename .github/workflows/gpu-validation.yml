@@ -1,45 +1,71 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: Validate tree-gain algorithm
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
 jobs:
   test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
-    env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+    name: tree-gain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: dmlc/treelite
+        ref: 4740ad7e2a027a56321bdf2d90bab64a3526ebc9
+        persist-credentials: false
+    - name: Apply verified change
+      shell: bash
+      run: 'set -euo pipefail
+
+        echo ZGlmZiAtLWdpdCBhL3NyYy9tb2RlbF9sb2FkZXIvc2tsZWFybi5jYyBiL3NyYy9tb2RlbF9sb2FkZXIvc2tsZWFybi5jYwppbmRleCAwMTZmNWQ5Li5mMGE5NmJmIDEwMDY0NAotLS0gYS9zcmMvbW9kZWxfbG9hZGVyL3NrbGVhcm4uY2MKKysrIGIvc3JjL21vZGVsX2xvYWRlci9za2xlYXJuLmNjCkBAIC0xODksNyArMTg5LDcgQEAgc3RkOjp1bmlxdWVfcHRyPE1vZGVsPiBMb2FkU0tMZWFybk1vZGVsKE1peEluJiBtaXhpbiwgaW50IG5fdHJlZXMsIGludCBuX2ZlYXR1cmUKICAgbWl4aW4uSGFuZGxlTWV0YWRhdGEoKmJ1aWxkZXIsIG5fdHJlZXMsIG5fZmVhdHVyZXMsIG5fdGFyZ2V0cywgbl9jbGFzc2VzKTsKIAogICBmb3IgKGludCB0cmVlX2lkID0gMDsgdHJlZV9pZCA8IG5fdHJlZXM7ICsrdHJlZV9pZCkgewotICAgIHN0ZDo6aW50NjRfdCBjb25zdCB0b3RhbF9zYW1wbGVfY250ID0gbl9ub2RlX3NhbXBsZXNbdHJlZV9pZF1bMF07CisgICAgZG91YmxlIGNvbnN0IHRvdGFsX3dlaWdodCA9IHdlaWdodGVkX25fbm9kZV9zYW1wbGVzW3RyZWVfaWRdWzBdOwogICAgIFRSRUVMSVRFX0NIRUNLX0xFKAogICAgICAgICBub2RlX2NvdW50W3RyZWVfaWRdLCBzdGF0aWNfY2FzdDxzdGQ6OmludDY0X3Q+KHN0ZDo6bnVtZXJpY19saW1pdHM8aW50Pjo6bWF4KCkpKQogICAgICAgICA8PCAiVG9vIG1hbnkgbm9kZXMgaW4gdGhlIHRyZWUiOwpAQCAtMjA4LDE2ICsyMDgsMTIgQEAgc3RkOjp1bmlxdWVfcHRyPE1vZGVsPiBMb2FkU0tMZWFybk1vZGVsKE1peEluJiBtaXhpbiwgaW50IG5fdHJlZXMsIGludCBuX2ZlYXR1cmUKICAgICAgIH0gZWxzZSB7CiAgICAgICAgIHN0ZDo6aW50NjRfdCBjb25zdCBzcGxpdF9pbmRleCA9IGZlYXR1cmVbdHJlZV9pZF1bbm9kZV9pZF07CiAgICAgICAgIGRvdWJsZSBjb25zdCBzcGxpdF9jb25kID0gdGhyZXNob2xkW3RyZWVfaWRdW25vZGVfaWRdOwotICAgICAgICBzdGQ6OmludDY0X3QgY29uc3QgbGVmdF9jaGlsZF9zYW1wbGVfY250ID0gbl9ub2RlX3NhbXBsZXNbdHJlZV9pZF1bbGVmdF9jaGlsZF9pZF07Ci0gICAgICAgIHN0ZDo6aW50NjRfdCBjb25zdCByaWdodF9jaGlsZF9zYW1wbGVfY250ID0gbl9ub2RlX3NhbXBsZXNbdHJlZV9pZF1bcmlnaHRfY2hpbGRfaWRdOwotICAgICAgICBkb3VibGUgY29uc3QgZ2FpbgotICAgICAgICAgICAgPSBzdGF0aWNfY2FzdDxkb3VibGU+KHNhbXBsZV9jbnQpCi0gICAgICAgICAgICAgICogKGltcHVyaXR5W3RyZWVfaWRdW25vZGVfaWRdCi0gICAgICAgICAgICAgICAgICAtIHN0YXRpY19jYXN0PGRvdWJsZT4obGVmdF9jaGlsZF9zYW1wbGVfY250KSAqIGltcHVyaXR5W3RyZWVfaWRdW2xlZnRfY2hpbGRfaWRdCi0gICAgICAgICAgICAgICAgICAgICAgICAvIHN0YXRpY19jYXN0PGRvdWJsZT4oc2FtcGxlX2NudCkKLSAgICAgICAgICAgICAgICAgIC0gc3RhdGljX2Nhc3Q8ZG91YmxlPihyaWdodF9jaGlsZF9zYW1wbGVfY250KSAqIGltcHVyaXR5W3RyZWVfaWRdW3JpZ2h0X2NoaWxkX2lkXQotICAgICAgICAgICAgICAgICAgICAgICAgLyBzdGF0aWNfY2FzdDxkb3VibGU+KHNhbXBsZV9jbnQpKQotICAgICAgICAgICAgICAvIHN0YXRpY19jYXN0PGRvdWJsZT4odG90YWxfc2FtcGxlX2NudCk7CisgICAgICAgIGRvdWJsZSBjb25zdCBnYWluID0gKHdlaWdodGVkX3NhbXBsZV9jbnQgKiBpbXB1cml0eVt0cmVlX2lkXVtub2RlX2lkXQorICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAtIHdlaWdodGVkX25fbm9kZV9zYW1wbGVzW3RyZWVfaWRdW2xlZnRfY2hpbGRfaWRdCisgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICogaW1wdXJpdHlbdHJlZV9pZF1bbGVmdF9jaGlsZF9pZF0KKyAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLSB3ZWlnaHRlZF9uX25vZGVfc2FtcGxlc1t0cmVlX2lkXVtyaWdodF9jaGlsZF9pZF0KKyAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgKiBpbXB1cml0eVt0cmVlX2lkXVtyaWdodF9jaGlsZF9pZF0pCisgICAgICAgICAgICAgICAgICAgICAgICAgICAgLyB0b3RhbF93ZWlnaHQ7CiAKICAgICAgICAgVFJFRUxJVEVfQ0hFQ0tfTEUoc3BsaXRfaW5kZXgsIHN0ZDo6bnVtZXJpY19saW1pdHM8c3RkOjppbnQzMl90Pjo6bWF4KCkpCiAgICAgICAgICAgICA8PCAic3BsaXRfaW5kZXggdG9vIGxhcmdlIjsKZGlmZiAtLWdpdCBhL3NyYy9tb2RlbF9sb2FkZXIvc2tsZWFybl9idWxrLmNjIGIvc3JjL21vZGVsX2xvYWRlci9za2xlYXJuX2J1bGsuY2MKaW5kZXggMDllNzI2YS4uY2NmMmRlZCAxMDA2NDQKLS0tIGEvc3JjL21vZGVsX2xvYWRlci9za2xlYXJuX2J1bGsuY2MKKysrIGIvc3JjL21vZGVsX2xvYWRlci9za2xlYXJuX2J1bGsuY2MKQEAgLTM4LDcgKzM4LDcgQEAgdm9pZCBCdWxrQ29uc3RydWN0VHJlZShUcmVlPFRocmVzaG9sZFR5cGUsIExlYWZPdXRwdXRUeXBlPiYgdHJlZSwgaW50IG5fbm9kZXMsCiAgICAgc3RkOjppbnQ2NF90IGNvbnN0KiBjaGlsZHJlbl9sZWZ0LCBzdGQ6OmludDY0X3QgY29uc3QqIGNoaWxkcmVuX3JpZ2h0LAogICAgIHN0ZDo6aW50NjRfdCBjb25zdCogZmVhdHVyZSwgZG91YmxlIGNvbnN0KiB0aHJlc2hvbGQsIGRvdWJsZSBjb25zdCogdmFsdWUsCiAgICAgc3RkOjp1aW50OF90IGNvbnN0KiBtaXNzaW5nX2dvX3RvX2xlZnQsIHN0ZDo6aW50NjRfdCBjb25zdCogbl9ub2RlX3NhbXBsZXMsCi0gICAgZG91YmxlIGNvbnN0KiB3ZWlnaHRlZF9uX25vZGVfc2FtcGxlcywgZG91YmxlIGNvbnN0KiBpbXB1cml0eSwgc3RkOjppbnQ2NF90IHRvdGFsX3NhbXBsZV9jbnQsCisgICAgZG91YmxlIGNvbnN0KiB3ZWlnaHRlZF9uX25vZGVfc2FtcGxlcywgZG91YmxlIGNvbnN0KiBpbXB1cml0eSwgc3RkOjppbnQ2NF90IC8qIHRvdGFsX3NhbXBsZV9jbnQgKi8sCiAgICAgaW50IG5fdGFyZ2V0cywgaW50IG1heF9udW1fY2xhc3MsIGJvb2wgaXNfY2xhc3NpZmllcikgewogICAvLyBDbGVhciBhbmQgcHJlLWFsbG9jYXRlIGFsbCBhcnJheXMgYXQgb25jZSAtIGtleSBvcHRpbWl6YXRpb24hCiAgIHRyZWUubm9kZV90eXBlXy5DbGVhcigpOwpAQCAtMTk1LDE2ICsxOTUsMTAgQEAgdm9pZCBCdWxrQ29uc3RydWN0VHJlZShUcmVlPFRocmVzaG9sZFR5cGUsIExlYWZPdXRwdXRUeXBlPiYgdHJlZSwgaW50IG5fbm9kZXMsCiAKICAgICAvLyBDYWxjdWxhdGUgYW5kIHNldCBnYWluIGZvciBpbnRlcm5hbCBub2RlcwogICAgIGlmICghaXNfbGVhZikgewotICAgICAgc3RkOjppbnQ2NF90IGNvbnN0IHNhbXBsZV9jbnQgPSBuX25vZGVfc2FtcGxlc1tub2RlX2lkXTsKLSAgICAgIHN0ZDo6aW50NjRfdCBjb25zdCBsZWZ0X3NhbXBsZV9jbnQgPSBuX25vZGVfc2FtcGxlc1tsZWZ0X2NoaWxkXTsKLSAgICAgIHN0ZDo6aW50NjRfdCBjb25zdCByaWdodF9zYW1wbGVfY250ID0gbl9ub2RlX3NhbXBsZXNbcmlnaHRfY2hpbGRdOwotICAgICAgZG91YmxlIGNvbnN0IGdhaW4gPSBzdGF0aWNfY2FzdDxkb3VibGU+KHNhbXBsZV9jbnQpCi0gICAgICAgICAgICAgICAgICAgICAgICAgICogKGltcHVyaXR5W25vZGVfaWRdCi0gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAtIHN0YXRpY19jYXN0PGRvdWJsZT4obGVmdF9zYW1wbGVfY250KSAqIGltcHVyaXR5W2xlZnRfY2hpbGRdCi0gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAvIHN0YXRpY19jYXN0PGRvdWJsZT4oc2FtcGxlX2NudCkKLSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC0gc3RhdGljX2Nhc3Q8ZG91YmxlPihyaWdodF9zYW1wbGVfY250KSAqIGltcHVyaXR5W3JpZ2h0X2NoaWxkXQotICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgLyBzdGF0aWNfY2FzdDxkb3VibGU+KHNhbXBsZV9jbnQpKQotICAgICAgICAgICAgICAgICAgICAgICAgICAvIHN0YXRpY19jYXN0PGRvdWJsZT4odG90YWxfc2FtcGxlX2NudCk7CisgICAgICBkb3VibGUgY29uc3QgZ2FpbiA9ICh3ZWlnaHRlZF9uX25vZGVfc2FtcGxlc1tub2RlX2lkXSAqIGltcHVyaXR5W25vZGVfaWRdCisgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAtIHdlaWdodGVkX25fbm9kZV9zYW1wbGVzW2xlZnRfY2hpbGRdICogaW1wdXJpdHlbbGVmdF9jaGlsZF0KKyAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC0gd2VpZ2h0ZWRfbl9ub2RlX3NhbXBsZXNbcmlnaHRfY2hpbGRdICogaW1wdXJpdHlbcmlnaHRfY2hpbGRdKQorICAgICAgICAgICAgICAgICAgICAgICAgICAvIHdlaWdodGVkX25fbm9kZV9zYW1wbGVzWzBdOwogICAgICAgdHJlZS5nYWluXy5QdXNoQmFjayhnYWluKTsKICAgICAgIHRyZWUuZ2Fpbl9wcmVzZW50Xy5QdXNoQmFjayh0cnVlKTsKICAgICB9IGVsc2UgewpkaWZmIC0tZ2l0IGEvdGVzdHMvcHl0aG9uL3Rlc3Rfc2tsZWFybl9pbnRlZ3JhdGlvbi5weSBiL3Rlc3RzL3B5dGhvbi90ZXN0X3NrbGVhcm5faW50ZWdyYXRpb24ucHkKaW5kZXggOWY5OWQ5Yy4uZGI2ODA2ZiAxMDA2NDQKLS0tIGEvdGVzdHMvcHl0aG9uL3Rlc3Rfc2tsZWFybl9pbnRlZ3JhdGlvbi5weQorKysgYi90ZXN0cy9weXRob24vdGVzdF9za2xlYXJuX2ludGVncmF0aW9uLnB5CkBAIC0yMTksNiArMjE5LDI5IEBAIGRlZiB0ZXN0X3NrbF9jb252ZXJ0ZXJfaWZvcmVzdChkYXRhc2V0KToKICAgICApCiAKIAorQHB5dGVzdC5tYXJrLnBhcmFtZXRyaXplKCJlc3RpbWF0b3IiLCBbUmFuZG9tRm9yZXN0Q2xhc3NpZmllciwgR3JhZGllbnRCb29zdGluZ1JlZ3Jlc3Nvcl0pCitkZWYgdGVzdF9pbXBvcnRfd2VpZ2h0ZWRfc3BsaXRfZ2Fpbihlc3RpbWF0b3IpOgorICAgIFgsIHkgPSBtYWtlX2NsYXNzaWZpY2F0aW9uKG5fZmVhdHVyZXM9NSwgcmFuZG9tX3N0YXRlPTQyKQorICAgIHdlaWdodHMgPSBucC5saW5zcGFjZSgwLjEsIDMuMCwgbGVuKHkpKQorICAgIG1vZGVsID0gZXN0aW1hdG9yKG5fZXN0aW1hdG9ycz0zLCBtYXhfZGVwdGg9MywgcmFuZG9tX3N0YXRlPTApLmZpdCgKKyAgICAgICAgWCwgeSwgc2FtcGxlX3dlaWdodD13ZWlnaHRzCisgICAgKQorICAgIGltcG9ydGVkID0gdHJlZWxpdGUuc2tsZWFybi5pbXBvcnRfbW9kZWwobW9kZWwpCisgICAgZm9yIHRyZWVfaWQsIHRyZWUgaW4gZW51bWVyYXRlKG5wLnJhdmVsKG1vZGVsLmVzdGltYXRvcnNfKSk6CisgICAgICAgIGFjY2Vzc29yID0gaW1wb3J0ZWQuZ2V0X3RyZWVfYWNjZXNzb3IodHJlZV9pZCkKKyAgICAgICAgc3BsaXRzID0gYWNjZXNzb3IuZ2V0X2ZpZWxkKCJnYWluX3ByZXNlbnQiKS5hc3R5cGUoYm9vbCkKKyAgICAgICAgaW1wb3J0YW5jZXMgPSBucC5iaW5jb3VudCgKKyAgICAgICAgICAgIGFjY2Vzc29yLmdldF9maWVsZCgic3BsaXRfaW5kZXgiKVtzcGxpdHNdLAorICAgICAgICAgICAgd2VpZ2h0cz1hY2Nlc3Nvci5nZXRfZmllbGQoImdhaW4iKVtzcGxpdHNdLAorICAgICAgICAgICAgbWlubGVuZ3RoPVguc2hhcGVbMV0sCisgICAgICAgICkKKyAgICAgICAgbnAudGVzdGluZy5hc3NlcnRfYWxsY2xvc2UoCisgICAgICAgICAgICBpbXBvcnRhbmNlcywKKyAgICAgICAgICAgIHRyZWUudHJlZV8uY29tcHV0ZV9mZWF0dXJlX2ltcG9ydGFuY2VzKG5vcm1hbGl6ZT1GYWxzZSksCisgICAgICAgICAgICBhdG9sPTFlLTEyLAorICAgICAgICApCisKKwogQHB5dGVzdC5tYXJrLnBhcmFtZXRyaXplKCJib290c3RyYXAiLCBbVHJ1ZSwgRmFsc2VdKQogQHB5dGVzdC5tYXJrLnBhcmFtZXRyaXplKCJ1c2Vfc2FtcGxlX3dlaWdodHMiLCBbVHJ1ZSwgRmFsc2VdKQogZGVmIHRlc3RfaWZvcmVzdF9yb3VuZF90cmlwKGJvb3RzdHJhcCwgdXNlX3NhbXBsZV93ZWlnaHRzKToK
+        | base64 -d | git apply -
+
+        git diff --check'
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Run tests
+      shell: bash
+      run: 'set -euo pipefail
+
+        export CMAKE_BUILD_PARALLEL_LEVEL=3 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+
+        python -m pip install -q pytest hypothesis pandas scikit-learn
+
+        git diff -- src/model_loader > /tmp/gain.patch
+
+        git apply -R /tmp/gain.patch
+
+        python -m pip install --no-deps -q ./python
+
+        set +e
+
+        python -m pytest -q tests/python/test_sklearn_integration.py -k weighted_split_gain
+        > /tmp/base.log 2>&1
+
+        base_status=$?
+
+        set -e
+
+        cat /tmp/base.log
+
+        test "$base_status" -eq 1
+
+        grep -q ''2 failed'' /tmp/base.log
+
+        git apply /tmp/gain.patch
+
+        python -m pip install -q --force-reinstall --no-deps ./python
+
+        python -m pytest -q tests/python/test_sklearn_integration.py -k ''weighted_split_gain
+        or iforest_round_trip'' tests/python/test_sklearn_trees_missing_values.py
+
+        python -m pytest -q tests/python/test_sklearn_trees_missing_values.py
+
+        echo aW1wb3J0IG51bXB5IGFzIG5wCmltcG9ydCB0cmVlbGl0ZQpmcm9tIHNrbGVhcm4uZGF0YXNldHMgaW1wb3J0IGxvYWRfZGlhYmV0ZXMsbG9hZF9icmVhc3RfY2FuY2VyCmZyb20gc2tsZWFybi5lbnNlbWJsZSBpbXBvcnQgR3JhZGllbnRCb29zdGluZ1JlZ3Jlc3NvcixHcmFkaWVudEJvb3N0aW5nQ2xhc3NpZmllcixSYW5kb21Gb3Jlc3RDbGFzc2lmaWVyLFJhbmRvbUZvcmVzdFJlZ3Jlc3NvcixFeHRyYVRyZWVzQ2xhc3NpZmllcixFeHRyYVRyZWVzUmVncmVzc29yCndvcnN0PTAuOyBjb3VudD0wCmZvciBjbGFzc2VzLGZuIGluIFsoW0dyYWRpZW50Qm9vc3RpbmdSZWdyZXNzb3IsUmFuZG9tRm9yZXN0UmVncmVzc29yLEV4dHJhVHJlZXNSZWdyZXNzb3JdLGxvYWRfZGlhYmV0ZXMpLChbR3JhZGllbnRCb29zdGluZ0NsYXNzaWZpZXIsIFJhbmRvbUZvcmVzdENsYXNzaWZpZXIsRXh0cmFUcmVlc0NsYXNzaWZpZXJdLGxvYWRfYnJlYXN0X2NhbmNlcildOgogICAgWCx5PWZuKHJldHVybl9YX3k9VHJ1ZSkKICAgIGZvciBjbGF6eiBpbiBjbGFzc2VzOgogICAgICAgIHRyYWluZWQ9Y2xhenoobl9lc3RpbWF0b3JzPTUscmFuZG9tX3N0YXRlPTIwLG1heF9kZXB0aD00KS5maXQoWCx5LHNhbXBsZV93ZWlnaHQ9bnAubGluc3BhY2UoLjIsNCxsZW4oeSkpKQogICAgICAgIG1vZGVsPXRyZWVsaXRlLnNrbGVhcm4uaW1wb3J0X21vZGVsKHRyYWluZWQpCiAgICAgICAgbW9kZWw9dHJlZWxpdGUuTW9kZWwuZGVzZXJpYWxpemVfYnl0ZXMobW9kZWwuc2VyaWFsaXplX2J5dGVzKCkpCiAgICAgICAgZm9yIGssdCBpbiBlbnVtZXJhdGUobnAucmF2ZWwodHJhaW5lZC5lc3RpbWF0b3JzXykpOgogICAgICAgICAgICBhY2M9bW9kZWwuZ2V0X3RyZWVfYWNjZXNzb3IoaykKICAgICAgICAgICAgbWFzaz1hY2MuZ2V0X2ZpZWxkKCdnYWluX3ByZXNlbnQnKS5hc3R5cGUoYm9vbCkKICAgICAgICAgICAgdmFsdWVzPW5wLmJpbmNvdW50KGFjYy5nZXRfZmllbGQoJ3NwbGl0X2luZGV4JylbbWFza10sd2VpZ2h0cz1hY2MuZ2V0X2ZpZWxkKCdnYWluJylbbWFza10sbWlubGVuZ3RoPVguc2hhcGVbMV0pCiAgICAgICAgICAgIGV4cGVjdGVkPXQudHJlZV8uY29tcHV0ZV9mZWF0dXJlX2ltcG9ydGFuY2VzKG5vcm1hbGl6ZT1GYWxzZSkKICAgICAgICAgICAgd29yc3Q9bWF4KHdvcnN0LG5wLm1heChucC5hYnMoZXhwZWN0ZWQtdmFsdWVzKSkpCiAgICAgICAgICAgIG5wLnRlc3RpbmcuYXNzZXJ0X2FsbGNsb3NlKHZhbHVlcyxleHBlY3RlZCxhdG9sPTFlLTExLHJ0b2w9MWUtMTIpO2NvdW50Kz0xCiAgICAgICAgcHJlZGljdGVkPXRyZWVsaXRlLmd0aWwucHJlZGljdChtb2RlbCxYKQogICAgICAgIGV4cGVjdGVkPSh0cmFpbmVkLnByZWRpY3RfcHJvYmEoWCkgaWYgY2xhenogaW4gW0dyYWRpZW50Qm9vc3RpbmdDbGFzc2lmaWVyLFJhbmRvbUZvcmVzdENsYXNzaWZpZXIsRXh0cmFUcmVlc0NsYXNzaWZpZXJdIGVsc2UgdHJhaW5lZC5wcmVkaWN0KFgpKQogICAgICAgIG5wLnRlc3RpbmcuYXNzZXJ0X2FsbGNsb3NlKHByZWRpY3RlZC5yZXNoYXBlKGV4cGVjdGVkLnNoYXBlKSxleHBlY3RlZCxhdG9sPTFlLTkpCnByaW50KCdSRVNVTFQnLGNvdW50LCd0cmVlcyBhZnRlciBzZXJpYWxpemF0aW9uLCA2IGVzdGltYXRvcnMsIG1heGltdW0gYWJzb2x1dGUgZGlmZmVyZW5jZScsd29yc3QsJ2FsbCBwcmVkaWN0aW9ucyBhbmQgcHJvYmFiaWxpdGllcyBhZ3JlZS4nKQ0K
+        | base64 -d > /tmp/tree-oracle.py
+
+        python /tmp/tree-oracle.py
+
+        '
