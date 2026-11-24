@@ -31,7 +31,9 @@ jobs:
 
         export CMAKE_BUILD_PARALLEL_LEVEL=4
 
-        git submodule update --init --depth 1
+        git submodule update --init
+
+        git -C vendor/source/igraph fetch --tags
 
         python -m pip install . pytest pytest-timeout parameterized networkx
 
