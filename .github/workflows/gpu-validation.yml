@@ -1,45 +1,44 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: Validate segmented-uem algorithm
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
 jobs:
   test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
-    env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+    name: segmented-uem
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: pyannote/pyannote-metrics
+        ref: 2b02d04586bad4dedb7ad05ea01a987c7021bf12
+        persist-credentials: false
+    - name: Apply verified change
+      shell: bash
+      run: 'set -euo pipefail
+
+        echo ZGlmZiAtLWdpdCBhL3NyYy9weWFubm90ZS9tZXRyaWNzL3NlZ21lbnRhdGlvbi5weSBiL3NyYy9weWFubm90ZS9tZXRyaWNzL3NlZ21lbnRhdGlvbi5weQppbmRleCBhNWY2NjhlLi4wNDNkNDc2IDEwMDY0NAotLS0gYS9zcmMvcHlhbm5vdGUvbWV0cmljcy9zZWdtZW50YXRpb24ucHkKKysrIGIvc3JjL3B5YW5ub3RlL21ldHJpY3Mvc2VnbWVudGF0aW9uLnB5CkBAIC0yOTEsNiArMjkxLDcgQEAgY2xhc3MgU2VnbWVudGF0aW9uUHJlY2lzaW9uKFVFTVN1cHBvcnRNaXhpbiwgQmFzZU1ldHJpYyk6CiAgICAgICAgIHNlbGYsCiAgICAgICAgIHJlZmVyZW5jZTogQW5ub3RhdGlvbiB8IFRpbWVsaW5lLAogICAgICAgICBoeXBvdGhlc2lzOiBBbm5vdGF0aW9uIHwgVGltZWxpbmUsCisgICAgICAgIHVlbTogVGltZWxpbmUgfCBOb25lID0gTm9uZSwKICAgICAgICAgKiprd2FyZ3MsCiAgICAgKSAtPiBEZXRhaWxzOgogCkBAIC0zMDAsMjcgKzMwMSwzMCBAQCBjbGFzcyBTZWdtZW50YXRpb25QcmVjaXNpb24oVUVNU3VwcG9ydE1peGluLCBCYXNlTWV0cmljKToKICAgICAgICAgaWYgaXNpbnN0YW5jZShoeXBvdGhlc2lzLCBBbm5vdGF0aW9uKToKICAgICAgICAgICAgIGh5cG90aGVzaXMgPSBoeXBvdGhlc2lzLmdldF90aW1lbGluZSgpCiAKLSAgICAgICAgZGV0YWlsID0gc2VsZi5pbml0X2NvbXBvbmVudHMoKQotCi0gICAgICAgICMgbnVtYmVyIG9mIG1hdGNoZXMgc28gZmFyLi4uCi0gICAgICAgIG5fbWF0Y2hlcyA9IDAuMCAgIyBtYWtlIHN1cmUgaXQgaXMgYSBmbG9hdCAoZm9yIGxhdGVyIHJhdGlvKQotCi0gICAgICAgICMgbnVtYmVyIG9mIGJvdW5kYXJpZXMgaW4gcmVmZXJlbmNlIGFuZCBoeXBvdGhlc2lzCi0gICAgICAgIE4gPSBtYXgoMCwgbGVuKHJlZmVyZW5jZSkgLSAxKQotICAgICAgICBNID0gbWF4KDAsIGxlbihoeXBvdGhlc2lzKSAtIDEpCisgICAgICAgIHJlZl9ib3VuZGFyaWVzID0gW3NlZ21lbnQuZW5kIGZvciBzZWdtZW50IGluIHJlZmVyZW5jZV1bOi0xXQorICAgICAgICBoeXBfYm91bmRhcmllcyA9IFtzZWdtZW50LmVuZCBmb3Igc2VnbWVudCBpbiBoeXBvdGhlc2lzXVs6LTFdCiAKLSAgICAgICAgIyBudW1iZXIgb2YgYm91bmRhcmllcyBpbiBoeXBvdGhlc2lzCi0gICAgICAgIGRldGFpbFtQUl9CT1VOREFSSUVTXSA9IE0KKyAgICAgICAgZGV0YWlsID0gc2VsZi5pbml0X2NvbXBvbmVudHMoKQorICAgICAgICBpZiB1ZW0gaXMgTm9uZToKKyAgICAgICAgICAgIGRldGFpbFtQUl9CT1VOREFSSUVTXSA9IGxlbihoeXBfYm91bmRhcmllcykKKyAgICAgICAgICAgIGRldGFpbFtQUl9NQVRDSEVTXSA9IHNlbGYuX2NvdW50X21hdGNoZXMocmVmX2JvdW5kYXJpZXMsIGh5cF9ib3VuZGFyaWVzKQorICAgICAgICBlbHNlOgorICAgICAgICAgICAgIyBPbmx5IGEgYm91bmRhcnkgc3RyaWN0bHkgaW5zaWRlIGEgc2NvcmVkIHJlZ2lvbiBzZXBhcmF0ZXMgdHdvCisgICAgICAgICAgICAjIHNjb3JlZCBzZWdtZW50cy4gTWF0Y2ggZWFjaCByZWdpb24gaW5kZXBlbmRlbnRseSwgZXZlbiB3aGVuIHRoZQorICAgICAgICAgICAgIyB0b2xlcmFuY2UgaXMgd2lkZXIgdGhhbiB0aGUgZ2FwIGJldHdlZW4gcmVnaW9ucy4KKyAgICAgICAgICAgIGZvciByZWdpb24gaW4gdWVtLnN1cHBvcnQoKToKKyAgICAgICAgICAgICAgICByZWYgPSBbdCBmb3IgdCBpbiByZWZfYm91bmRhcmllcyBpZiByZWdpb24uc3RhcnQgPCB0IDwgcmVnaW9uLmVuZF0KKyAgICAgICAgICAgICAgICBoeXAgPSBbdCBmb3IgdCBpbiBoeXBfYm91bmRhcmllcyBpZiByZWdpb24uc3RhcnQgPCB0IDwgcmVnaW9uLmVuZF0KKyAgICAgICAgICAgICAgICBkZXRhaWxbUFJfQk9VTkRBUklFU10gKz0gbGVuKGh5cCkKKyAgICAgICAgICAgICAgICBkZXRhaWxbUFJfTUFUQ0hFU10gKz0gc2VsZi5fY291bnRfbWF0Y2hlcyhyZWYsIGh5cCkKKyAgICAgICAgcmV0dXJuIGRldGFpbAogCi0gICAgICAgICMgY29ybmVyIGNhc2UgKG5vIGJvdW5kYXJ5IGluIGh5cG90aGVzaXMgb3IgaW4gcmVmZXJlbmNlKQorICAgIGRlZiBfY291bnRfbWF0Y2hlcyhzZWxmLCByZWZfYm91bmRhcmllcywgaHlwX2JvdW5kYXJpZXMpOgorICAgICAgICBOLCBNID0gbGVuKHJlZl9ib3VuZGFyaWVzKSwgbGVuKGh5cF9ib3VuZGFyaWVzKQogICAgICAgICBpZiBNID09IDAgb3IgTiA9PSAwOgotICAgICAgICAgICAgZGV0YWlsW1BSX01BVENIRVNdID0gMC4wCi0gICAgICAgICAgICByZXR1cm4gZGV0YWlsCi0KLSAgICAgICAgIyByZWZlcmVuY2UgYW5kIGh5cG90aGVzaXMgYm91bmRhcmllcwotICAgICAgICByZWZfYm91bmRhcmllcyA9IFtzZWdtZW50LmVuZCBmb3Igc2VnbWVudCBpbiByZWZlcmVuY2VdWzotMV0KLSAgICAgICAgaHlwX2JvdW5kYXJpZXMgPSBbc2VnbWVudC5lbmQgZm9yIHNlZ21lbnQgaW4gaHlwb3RoZXNpc11bOi0xXQorICAgICAgICAgICAgcmV0dXJuIDAKIAorICAgICAgICBuX21hdGNoZXMgPSAwCiAgICAgICAgICMgdGVtcG9yYWwgZGVsdGEgYmV0d2VlbiBhbGwgcGFpcnMgb2YgYm91bmRhcmllcwogICAgICAgICBkZWx0YSA9IG5wLnplcm9zKChOLCBNKSkKICAgICAgICAgZm9yIHIsIHJlZkJvdW5kYXJ5IGluIGVudW1lcmF0ZShyZWZfYm91bmRhcmllcyk6CkBAIC0zNTIsOCArMzU2LDcgQEAgY2xhc3MgU2VnbWVudGF0aW9uUHJlY2lzaW9uKFVFTVN1cHBvcnRNaXhpbiwgQmFzZU1ldHJpYyk6CiAgICAgICAgICAgICAjIHVwZGF0ZSBtaW5pbXVtIHZhbHVlIGluIGRlbHRhCiAgICAgICAgICAgICBoID0gbnAuYW1pbihkZWx0YSkKIAotICAgICAgICBkZXRhaWxbUFJfTUFUQ0hFU10gPSBuX21hdGNoZXMKLSAgICAgICAgcmV0dXJuIGRldGFpbAorICAgICAgICByZXR1cm4gbl9tYXRjaGVzCiAKICAgICBkZWYgY29tcHV0ZV9tZXRyaWMoc2VsZiwgZGV0YWlsOiBEZXRhaWxzKSAtPiBmbG9hdDoKIApAQCAtNDA0LDYgKzQwNyw3IEBAIGNsYXNzIFNlZ21lbnRhdGlvblJlY2FsbChTZWdtZW50YXRpb25QcmVjaXNpb24pOgogICAgICAgICBzZWxmLAogICAgICAgICByZWZlcmVuY2U6IEFubm90YXRpb24gfCBUaW1lbGluZSwKICAgICAgICAgaHlwb3RoZXNpczogQW5ub3RhdGlvbiB8IFRpbWVsaW5lLAorICAgICAgICB1ZW06IFRpbWVsaW5lIHwgTm9uZSA9IE5vbmUsCiAgICAgICAgICoqa3dhcmdzLAogICAgICkgLT4gRGV0YWlsczoKLSAgICAgICAgcmV0dXJuIHN1cGVyKCkuY29tcHV0ZV9jb21wb25lbnRzKGh5cG90aGVzaXMsIHJlZmVyZW5jZSkKKyAgICAgICAgcmV0dXJuIHN1cGVyKCkuY29tcHV0ZV9jb21wb25lbnRzKGh5cG90aGVzaXMsIHJlZmVyZW5jZSwgdWVtPXVlbSwgKiprd2FyZ3MpCmRpZmYgLS1naXQgYS90ZXN0cy90ZXN0X3NlZ21lbnRhdGlvbl9wcmVjaXNpb24ucHkgYi90ZXN0cy90ZXN0X3NlZ21lbnRhdGlvbl9wcmVjaXNpb24ucHkKaW5kZXggMTFkODAwNC4uNGVmODJkZiAxMDA2NDQKLS0tIGEvdGVzdHMvdGVzdF9zZWdtZW50YXRpb25fcHJlY2lzaW9uLnB5CisrKyBiL3Rlc3RzL3Rlc3Rfc2VnbWVudGF0aW9uX3ByZWNpc2lvbi5weQpAQCAtMSw2ICsxLDYgQEAKLWZyb20gcHlhbm5vdGUuY29yZSBpbXBvcnQgU2VnbWVudCwgVGltZWxpbmUKK2Zyb20gcHlhbm5vdGUuY29yZSBpbXBvcnQgQW5ub3RhdGlvbiwgU2VnbWVudCwgVGltZWxpbmUKIAotZnJvbSBweWFubm90ZS5tZXRyaWNzLnNlZ21lbnRhdGlvbiBpbXBvcnQgU2VnbWVudGF0aW9uUHJlY2lzaW9uCitmcm9tIHB5YW5ub3RlLm1ldHJpY3Muc2VnbWVudGF0aW9uIGltcG9ydCBTZWdtZW50YXRpb25QcmVjaXNpb24sIFNlZ21lbnRhdGlvblJlY2FsbAogCiAKIGRlZiB0ZXN0X3NlZ21lbnRhdGlvbl9wcmVjaXNpb25fZW1wdHlfaHlwb3RoZXNpcygpOgpAQCAtMTQsMyArMTQsMjggQEAgZGVmIHRlc3Rfc2VnbWVudGF0aW9uX3ByZWNpc2lvbl9lbXB0eV9oeXBvdGhlc2lzKCk6CiAgICAgbShyZWYsIHJlZikKICAgICBtKFRpbWVsaW5lKFtTZWdtZW50KDAsIDMpXSksIFRpbWVsaW5lKCkpCiAgICAgYXNzZXJ0IGFicyhtKSA8PSAxLjAKKworCitkZWYgdGVzdF9zZWdtZW50YXRpb25fZXZhbHVhdGlvbl9tYXAoKToKKyAgICByZWYgPSBUaW1lbGluZShbU2VnbWVudCgwLCAxKSwgU2VnbWVudCgxLCAyKV0pCisgICAgaHlwID0gQW5ub3RhdGlvbigpCisgICAgZm9yIGkgaW4gcmFuZ2UoMyk6CisgICAgICAgIGh5cFtTZWdtZW50KGksIGkgKyAxKV0gPSBpCisgICAgdWVtID0gVGltZWxpbmUoW1NlZ21lbnQoMCwgMSksIFNlZ21lbnQoMSwgMildKQorICAgIGZvciBtZXRyaWMsIHJlZmVyZW5jZSwgaHlwb3RoZXNpcyBpbiAoCisgICAgICAgIChTZWdtZW50YXRpb25QcmVjaXNpb24oKSwgcmVmLCBoeXApLAorICAgICAgICAoU2VnbWVudGF0aW9uUmVjYWxsKCksIGh5cCwgcmVmKSwKKyAgICApOgorICAgICAgICBhc3NlcnQgbWV0cmljKHJlZmVyZW5jZSwgaHlwb3RoZXNpcykgPT0gMC41CisgICAgICAgIGFzc2VydCBtZXRyaWMocmVmZXJlbmNlLCBoeXBvdGhlc2lzLCB1ZW09dWVtKSA9PSAxLjAKKyAgICAgICAgZW1wdHkgPSBtZXRyaWMocmVmZXJlbmNlLCBoeXBvdGhlc2lzLCB1ZW09VGltZWxpbmUoKSwgZGV0YWlsZWQ9VHJ1ZSkKKyAgICAgICAgYXNzZXJ0IGVtcHR5WyJudW1iZXIgb2YgYm91bmRhcmllcyJdID09IGVtcHR5WyJudW1iZXIgb2YgbWF0Y2hlcyJdID09IDAKKworCitkZWYgdGVzdF9zZWdtZW50YXRpb25fZG9lc19ub3RfbWF0Y2hfYWNyb3NzX3Vuc2NvcmVkX2dhcCgpOgorICAgIHJlZiA9IFRpbWVsaW5lKFtTZWdtZW50KDAsIDAuOSksIFNlZ21lbnQoMC45LCAyKV0pCisgICAgaHlwID0gVGltZWxpbmUoW1NlZ21lbnQoMCwgMS4xKSwgU2VnbWVudCgxLjEsIDIpXSkKKyAgICB1ZW0gPSBUaW1lbGluZShbU2VnbWVudCgwLCAwLjk1KSwgU2VnbWVudCgxLjA1LCAyKV0pCisgICAgZm9yIG1ldHJpYyBpbiAoU2VnbWVudGF0aW9uUHJlY2lzaW9uKHRvbGVyYW5jZT0wLjMpLCBTZWdtZW50YXRpb25SZWNhbGwodG9sZXJhbmNlPTAuMykpOgorICAgICAgICBhc3NlcnQgbWV0cmljKHJlZiwgaHlwKSA9PSAxLjAKKyAgICAgICAgYXNzZXJ0IG1ldHJpYyhyZWYsIGh5cCwgdWVtPXVlbSkgPT0gMC4wCg==
+        | base64 -d | git apply -
+
+        git diff --check'
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Run tests
+      shell: bash
+      run: 'set -euo pipefail
+
+        export MPLBACKEND=Agg
+
+        python -m pip install ".[test,cli,plot,transcription]"
+
+        python -m pytest -q tests
+
+
+        echo aW1wb3J0IGl0ZXJ0b29scwpmcm9tIHB5YW5ub3RlLmNvcmUgaW1wb3J0IFRpbWVsaW5lLFNlZ21lbnQKZnJvbSBweWFubm90ZS5tZXRyaWNzLnNlZ21lbnRhdGlvbiBpbXBvcnQgU2VnbWVudGF0aW9uUHJlY2lzaW9uLFNlZ21lbnRhdGlvblJlY2FsbApkZWYgdGltZWxpbmUocG9pbnRzKToKICAgIHJldHVybiBUaW1lbGluZShbU2VnbWVudChhLGIpIGZvciBhLGIgaW4gemlwKFswXStwb2ludHMscG9pbnRzK1s4XSldKQpjYXNlcz0wCmZvciBtYXNrIGluIFtbXSwgWygwLDgpXSwgWygxLDQpLCg1LDcpXSxbKDAsNCksKDQsOCldXToKICAgIGNvdmVyZWQ9WygwLDgpXSBpZiBtYXNrPT1bKDAsNCksKDQsOCldIGVsc2UgbWFzawogICAgdWVtPVRpbWVsaW5lKFtTZWdtZW50KGEsYikgZm9yIGEsYiBpbiBtYXNrXSkKICAgIGdyb3Vwcz1bbGlzdChjKSBmb3IgayBpbiByYW5nZSgzKSBmb3IgYyBpbiBpdGVydG9vbHMuY29tYmluYXRpb25zKHJhbmdlKDEsOCksayldCiAgICBmb3IgYSxiIGluIGl0ZXJ0b29scy5wcm9kdWN0KGdyb3VwcyxyZXBlYXQ9Mik6CiAgICAgICAgeD17dCBmb3IgdCBpbiBhIGlmIGFueShpPHQ8aiBmb3IgaSxqIGluIGNvdmVyZWQpfQogICAgICAgIHk9e3QgZm9yIHQgaW4gYiBpZiBhbnkoaTx0PGogZm9yIGksaiBpbiBjb3ZlcmVkKX0KICAgICAgICByZWYsaHlwPXRpbWVsaW5lKGEpLHRpbWVsaW5lKGIpCiAgICAgICAgZm9yIG1ldHJpYyxkZW4gaW4gWyhTZWdtZW50YXRpb25QcmVjaXNpb24oKSxsZW4oeSkpLChTZWdtZW50YXRpb25SZWNhbGwoKSxsZW4oeCkpXToKICAgICAgICAgICAgc2NvcmU9bWV0cmljKHJlZixoeXAsdWVtPXVlbSxkZXRhaWxlZD1UcnVlKQogICAgICAgICAgICBhc3NlcnQgc2NvcmVbJ251bWJlciBvZiBtYXRjaGVzJ109PWxlbih4JnkpIGFuZCBzY29yZVsnbnVtYmVyIG9mIGJvdW5kYXJpZXMnXT09ZGVuCiAgICAgICAgICAgIGNhc2VzKz0xCnByaW50KCdSRVNVTFQnLGNhc2VzLCdtYXNrZWQgc2VnbWVudGF0aW9uIHNjb3JlcyBtYXRjaGVkIGV4cGxpY2l0IGJvdW5kYXJ5IHNldHMnKQ0K
+        | base64 -d > /tmp/independent-check.py
+
+        python /tmp/independent-check.py
+
+        '
