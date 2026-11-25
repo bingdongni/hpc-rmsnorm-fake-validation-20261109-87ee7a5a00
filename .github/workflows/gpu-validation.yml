@@ -1,45 +1,73 @@
-name: RMSNorm fake output validation
-
-on:
-  workflow_dispatch:
-
+name: Validate deep-fixed-state algorithm
+'on':
+  workflow_dispatch: {}
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: [self-hosted, Windows, X64, hpc-rmsnorm-gpu-87ee7a5a00]
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: powershell
+  cpu:
+    name: Shared DPA4C training and finite differences
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     env:
-      MASK_MACHINE: ${{ secrets.MASK_MACHINE }}
-      MASK_USER: ${{ secrets.MASK_USER }}
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      HPC_VALIDATION_ROOT: ${{ github.workspace }}
+      DP_ENABLE_PYTORCH: '0'
+      DP_ENABLE_TENSORFLOW: '0'
+      OMP_NUM_THREADS: '1'
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - name: Verify source hashes and CUDA device
-        run: |
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import hashlib,pathlib; pairs=[('hpc/normalization.py','114fd65aef0e490e648bdc213acefa068ad214984f9330b4a610c34152130c0d'),('tests/test_normalization.py','758d90b61c8a2b0a6a2485e58ae12b34e015ac4fb09db453dc87bd72dd0f099e'),('tests/utils.py','bccbb722ba316fe27730a2ec4a10ae93dd82a72d9fcdcb8bb739d108fc4aa539'),('baseline_normalization.py','0e6c5b8facbe341a27cf2ff4a0c67a6ca9933aa94d6dfb411f99525e6626e9b4'),('hpc_ops_fake_contract_runner_20261109.py','e5bf7bf77f0f55c75b994ddbf1bd6381fbe389e4ebba679636c31e66e6d2219b')]; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in pairs); print('Source hashes verified')"
-          if ($LASTEXITCODE -ne 0) { throw 'Source hash verification failed' }
-          Write-Host 'Patched commit: 352b95a97995d41f356933f4e8d93d5a7a8e62ce'
-          Write-Host 'Upstream baseline: 2a2e26562433a8ba4b504858f1c938eb7612c901'
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' -c "import torch; assert torch.cuda.is_available(); print('GPU:',torch.cuda.get_device_name(0),'PyTorch:',torch.__version__,'CUDA:',torch.version.cuda)"
-          if ($LASTEXITCODE -ne 0) { throw 'CUDA device check failed' }
-      - name: Confirm baseline failures
-        run: |
-          $env:HPC_NORMALIZATION_SOURCE = Join-Path $env:GITHUB_WORKSPACE 'baseline_normalization.py'
-          $output = & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py 2>&1 | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $output
-          if ($code -ne 1 -or $output -notmatch '3 failed, 1 passed') { throw 'Unexpected baseline result' }
-          exit 0
-      - name: Run patched tests with a CUDA reference implementation
-        run: |
-          Remove-Item Env:HPC_NORMALIZATION_SOURCE -ErrorAction SilentlyContinue
-          & 'C:\PR\kvpress-gpu-venv-20261107\Scripts\python.exe' hpc_ops_fake_contract_runner_20261109.py
-          if ($LASTEXITCODE -ne 0) { throw 'Patched validation failed' }
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        repository: deepmodeling/deepmd-kit
+        ref: 24478f141c9e0910a6bcc8192cac085054e4e70d
+        persist-credentials: false
+    - name: Build pinned source and CPU PyTorch runtime
+      run: 'set -euo pipefail
+
+        python -m pip -q install uv
+
+        uv venv --python 3.12
+
+        uv pip install --python .venv torch==2.15.0 --index-url https://download.pytorch.org/whl/cpu
+
+        uv pip install --python .venv --editable . dpdata e3nn ase pytest pytest-timeout
+        array-api-strict ruff'
+    - name: Confirm the unchanged implementation fails the new cases
+      run: 'set -euo pipefail
+
+        echo ZGlmZiAtLWdpdCBhL3NvdXJjZS90ZXN0cy9wdF9leHB0L21vZGVsL3Rlc3RfZHBhNGNfemJsX2JyaWRnaW5nLnB5IGIvc291cmNlL3Rlc3RzL3B0X2V4cHQvbW9kZWwvdGVzdF9kcGE0Y196YmxfYnJpZGdpbmcucHkKaW5kZXggM2NhNjZiYy4uYzgwNGEwYyAxMDA2NDQKLS0tIGEvc291cmNlL3Rlc3RzL3B0X2V4cHQvbW9kZWwvdGVzdF9kcGE0Y196YmxfYnJpZGdpbmcucHkKKysrIGIvc291cmNlL3Rlc3RzL3B0X2V4cHQvbW9kZWwvdGVzdF9kcGE0Y196YmxfYnJpZGdpbmcucHkKQEAgLTM2LDkgKzM2LDE1IEBAIGZyb20gZGVlcG1kLnB0X2V4cHQubW9kZWwuZ2V0X21vZGVsIGltcG9ydCAoCiBmcm9tIGRlZXBtZC5wdF9leHB0Lm1vZGVsLmdyYXBoX2xvd2VyIGltcG9ydCAoCiAgICAgbW9kZWxfdXNlc19ncmFwaF9sb3dlciwKICkKK2Zyb20gZGVlcG1kLnB0X2V4cHQudHJhaW4ud3JhcHBlciBpbXBvcnQgKAorICAgIE1vZGVsV3JhcHBlciwKKykKIGZyb20gZGVlcG1kLnB0X2V4cHQudXRpbHMgaW1wb3J0ICgKICAgICBlbnYsCiApCitmcm9tIGRlZXBtZC5wdF9leHB0LnV0aWxzLm11bHRpX3Rhc2sgaW1wb3J0ICgKKyAgICBwcmVwcm9jZXNzX3NoYXJlZF9wYXJhbXMsCispCiBmcm9tIGRlZXBtZC5wdF9leHB0LnV0aWxzLnNlcmlhbGl6YXRpb24gaW1wb3J0ICgKICAgICBfbmVlZHNfd2l0aF9jb21tX2FydGlmYWN0LAogICAgIF9yZXNvbHZlX2xvd2VyX2tpbmQsCkBAIC00Nyw2ICs1Myw3IEBAIGZyb20gZGVlcG1kLnB0X2V4cHQudXRpbHMuc2VyaWFsaXphdGlvbiBpbXBvcnQgKAogKQogZnJvbSBkZWVwbWQudXRpbHMuYnJpZGdpbmcgaW1wb3J0ICgKICAgICBERUZBVUxUX1RSVU5DQVRJT04sCisgICAgZXhwYW5kX2JyaWRnaW5nX21ldGhvZCwKICkKIGZyb20gZGVlcG1kLnV0aWxzLmVsZW1lbnRfcmFkaWkgaW1wb3J0ICgKICAgICBjb3ZhbGVudF9yYWRpaV9mcm9tX3R5cGVfbWFwLApAQCAtMTkyLDYgKzE5OSw2NSBAQCBkZWYgX3BlcnR1cmIobW9kZWw6IHRvcmNoLm5uLk1vZHVsZSkgLT4gTm9uZToKICAgICAgICAgICAgICAgICBwYXJhbWV0ZXIuYWRkXygwLjMgKiBub2lzZS50byhwYXJhbWV0ZXIuZGV2aWNlKSkKIAogCitAcHl0ZXN0Lm1hcmsucGFyYW1ldHJpemUoIm1ldGhvZHMiLCBbKCJub25lIiwgInpibCIpLCAoInpibCIsICJub25lIiksICgiemJsIiwgInpibCIpXSkKK2RlZiB0ZXN0X211bHRpdGFza19zaGFyZWRfZGVzY3JpcHRvcihtZXRob2RzOiB0dXBsZVtzdHIsIHN0cl0pIC0+IE5vbmU6CisgICAgaGVhZHMgPSB7CisgICAgICAgIGtleTogeyoqWkJMX0NPTkZJRywgImRlc2NyaXB0b3IiOiAicmVwIiwgImJyaWRnaW5nX21ldGhvZCI6IG1ldGhvZH0KKyAgICAgICAgZm9yIGtleSwgbWV0aG9kIGluIHppcCgoImZpcnN0IiwgInNlY29uZCIpLCBtZXRob2RzLCBzdHJpY3Q9VHJ1ZSkKKyAgICB9CisgICAgY29uZmlnLCBsaW5rcyA9IHByZXByb2Nlc3Nfc2hhcmVkX3BhcmFtcygKKyAgICAgICAgeyJzaGFyZWRfZGljdCI6IHsicmVwIjogUExBSU5fQ09ORklHWyJkZXNjcmlwdG9yIl19LCAibW9kZWxfZGljdCI6IGhlYWRzfQorICAgICkKKyAgICBtb2RlbHMgPSB7a2V5OiBnZXRfbW9kZWwocGFyYW1zKSBmb3Iga2V5LCBwYXJhbXMgaW4gY29uZmlnWyJtb2RlbF9kaWN0Il0uaXRlbXMoKX0KKyAgICByZWZlcmVuY2VzID0geworICAgICAgICBrZXk6IGdldF9tb2RlbChwYXJhbXMpIGZvciBrZXksIHBhcmFtcyBpbiBjb25maWdbIm1vZGVsX2RpY3QiXS5pdGVtcygpCisgICAgfQorICAgIGZvciBrZXksIG1vZGVsIGluIG1vZGVscy5pdGVtcygpOgorICAgICAgICBfcGVydHVyYihtb2RlbCkKKyAgICAgICAgcmVmZXJlbmNlc1trZXldLmxvYWRfc3RhdGVfZGljdChtb2RlbC5zdGF0ZV9kaWN0KCkpCisKKyAgICB3cmFwcGVyID0gTW9kZWxXcmFwcGVyKG1vZGVscykKKyAgICB3cmFwcGVyLnNoYXJlX3BhcmFtcyhsaW5rcywgeyJmaXJzdCI6IDAuNSwgInNlY29uZCI6IDAuNX0pCisgICAgZmlyc3QsIHNlY29uZCA9IChtb2RlbC5nZXRfZGVzY3JpcHRvcigpIGZvciBtb2RlbCBpbiBtb2RlbHMudmFsdWVzKCkpCisgICAgYXNzZXJ0IGZpcnN0IGlzIG5vdCBzZWNvbmQKKyAgICBzaGFyZWQgPSBkaWN0KGZpcnN0Lm5hbWVkX3BhcmFtZXRlcnMoKSkKKyAgICBhc3NlcnQgc2hhcmVkIGFuZCBhbGwocCBpcyBzaGFyZWRbbmFtZV0gZm9yIG5hbWUsIHAgaW4gc2Vjb25kLm5hbWVkX3BhcmFtZXRlcnMoKSkKKworICAgIGZvciBrZXksIGRpc3RhbmNlIGluIHppcChoZWFkcywgKDAuNCwgMC42NSksIHN0cmljdD1UcnVlKToKKyAgICAgICAgcmVmID0gcmVmZXJlbmNlc1trZXldCisgICAgICAgIHJlZl9wYXJhbXMgPSBkaWN0KHJlZi5nZXRfZGVzY3JpcHRvcigpLm5hbWVkX3BhcmFtZXRlcnMoKSkKKyAgICAgICAgd2l0aCB0b3JjaC5ub19ncmFkKCk6CisgICAgICAgICAgICBmb3IgbmFtZSwgcCBpbiByZWZfcGFyYW1zLml0ZW1zKCk6CisgICAgICAgICAgICAgICAgcC5jb3B5XyhzaGFyZWRbbmFtZV0pCisgICAgICAgIG91dHB1dHMgPSBfZXZhbHVhdGUobW9kZWxzW2tleV0sIF9jbHVzdGVyKGRpc3RhbmNlKSkKKyAgICAgICAgZXhwZWN0ZWQgPSBfZXZhbHVhdGUocmVmLCBfY2x1c3RlcihkaXN0YW5jZSkpCisgICAgICAgIGZvciBmaWVsZCBpbiAoImVuZXJneSIsICJmb3JjZSIpOgorICAgICAgICAgICAgdG9yY2gudGVzdGluZy5hc3NlcnRfY2xvc2Uob3V0cHV0c1tmaWVsZF0sIGV4cGVjdGVkW2ZpZWxkXSkKKyAgICAgICAgb3V0cHV0c1siZW5lcmd5Il0uc3VtKCkuYmFja3dhcmQoKQorICAgICAgICBleHBlY3RlZFsiZW5lcmd5Il0uc3VtKCkuYmFja3dhcmQoKQorCisgICAgcmVmX2dyYWRzID0gWworICAgICAgICBkaWN0KG0uZ2V0X2Rlc2NyaXB0b3IoKS5uYW1lZF9wYXJhbWV0ZXJzKCkpIGZvciBtIGluIHJlZmVyZW5jZXMudmFsdWVzKCkKKyAgICBdCisgICAgZm9yIG5hbWUsIHAgaW4gc2hhcmVkLml0ZW1zKCk6CisgICAgICAgIGdyYWRzID0gW3BhcmFtc1tuYW1lXS5ncmFkIGZvciBwYXJhbXMgaW4gcmVmX2dyYWRzXQorICAgICAgICBpZiBhbGwoZyBpcyBOb25lIGZvciBnIGluIGdyYWRzKToKKyAgICAgICAgICAgIGFzc2VydCBwLmdyYWQgaXMgTm9uZQorICAgICAgICBlbHNlOgorICAgICAgICAgICAgdG9yY2gudGVzdGluZy5hc3NlcnRfY2xvc2UocC5ncmFkLCBzdW0oZyBmb3IgZyBpbiBncmFkcyBpZiBnIGlzIG5vdCBOb25lKSkKKworCitkZWYgdGVzdF9saW5lYXJfZGVzY3JpcHRvcl9zZWxlY3Rpb24oKSAtPiBOb25lOgorICAgIGNvbmZpZyA9IGV4cGFuZF9icmlkZ2luZ19tZXRob2QoY29weS5kZWVwY29weShaQkxfQ09ORklHKSkKKyAgICBjb25maWdbIm1vZGVscyJdLnJldmVyc2UoKQorICAgIG1vZGVsID0gZ2V0X21vZGVsKGNvbmZpZykKKyAgICBhc3NlcnQgbW9kZWwuZ2V0X2Rlc2NyaXB0b3IoKSBpcyBtb2RlbC5hdG9taWNfbW9kZWwubW9kZWxzWzFdLmRlc2NyaXB0b3IKKworICAgIGNvbmZpZ1sibW9kZWxzIl1bMF0gPSBjb3B5LmRlZXBjb3B5KGNvbmZpZ1sibW9kZWxzIl1bMV0pCisgICAgd2l0aCBweXRlc3QucmFpc2VzKEF0dHJpYnV0ZUVycm9yLCBtYXRjaD0ibm8gdW5pcXVlIGxlYXJuZWQgZGVzY3JpcHRvciIpOgorICAgICAgICBnZXRfbW9kZWwoY29uZmlnKS5nZXRfZGVzY3JpcHRvcigpCisKKwogY2xhc3MgVGVzdERQQTRDWkJMQnJpZGdpbmc6CiAgICAgZGVmIHNldHVwX21ldGhvZChzZWxmKSAtPiBOb25lOgogICAgICAgICBzZWxmLm1vZGVsID0gZ2V0X21vZGVsKGNvcHkuZGVlcGNvcHkoWkJMX0NPTkZJRykpLmV2YWwoKQo=
+        | base64 -d | git apply -
+
+        set +e
+
+        .venv/bin/pytest -q source/tests/pt_expt/model/test_dpa4c_zbl_bridging.py
+        -k multitask_shared_descriptor --tb=short > /tmp/before 2>&1
+
+        rv=$?
+
+        set -e
+
+        cat /tmp/before
+
+        test "$rv" -eq 1
+
+        grep -q "3 failed" /tmp/before
+
+        grep -q "descriptor" /tmp/before'
+    - name: Check patch and both training heads
+      run: 'set -euo pipefail
+
+        echo ZGlmZiAtLWdpdCBhL2RlZXBtZC9wdF9leHB0L21vZGVsL2RwX2xpbmVhcl9tb2RlbC5weSBiL2RlZXBtZC9wdF9leHB0L21vZGVsL2RwX2xpbmVhcl9tb2RlbC5weQppbmRleCA1NjVkZDU1Li42YjJiNGRiIDEwMDY0NAotLS0gYS9kZWVwbWQvcHRfZXhwdC9tb2RlbC9kcF9saW5lYXJfbW9kZWwucHkKKysrIGIvZGVlcG1kL3B0X2V4cHQvbW9kZWwvZHBfbGluZWFyX21vZGVsLnB5CkBAIC0xMiw5ICsxMiwxNSBAQCBmcm9tIHRvcmNoLmZ4LmV4cGVyaW1lbnRhbC5wcm94eV90ZW5zb3IgaW1wb3J0ICgKICAgICBtYWtlX2Z4LAogKQogCitmcm9tIGRlZXBtZC5kcG1vZGVsLmF0b21pY19tb2RlbC5kcF9hdG9taWNfbW9kZWwgaW1wb3J0ICgKKyAgICBEUEF0b21pY01vZGVsLAorKQogZnJvbSBkZWVwbWQuZHBtb2RlbC5hdG9taWNfbW9kZWwubGluZWFyX2F0b21pY19tb2RlbCBpbXBvcnQgKAogICAgIExpbmVhckVuZXJneUF0b21pY01vZGVsLAogKQorZnJvbSBkZWVwbWQuZHBtb2RlbC5kZXNjcmlwdG9yLmJhc2VfZGVzY3JpcHRvciBpbXBvcnQgKAorICAgIEJhc2VEZXNjcmlwdG9yLAorKQogZnJvbSBkZWVwbWQuZHBtb2RlbC5tb2RlbC5kcF9tb2RlbCBpbXBvcnQgKAogICAgIERQTW9kZWxDb21tb24sCiApCkBAIC03Niw2ICs4MiwxNyBAQCBjbGFzcyBMaW5lYXJFbmVyZ3lNb2RlbChEUE1vZGVsQ29tbW9uLCBEUExpbmVhck1vZGVsXyk6CiAgICAgICAgIERQTW9kZWxDb21tb24uX19pbml0X18oc2VsZikKICAgICAgICAgRFBMaW5lYXJNb2RlbF8uX19pbml0X18oc2VsZiwgKmFyZ3MsICoqa3dhcmdzKQogCisgICAgZGVmIGdldF9kZXNjcmlwdG9yKHNlbGYpIC0+IEJhc2VEZXNjcmlwdG9yOgorICAgICAgICAiIiJSZXR1cm4gdGhlIHVuaXF1ZSBsZWFybmVkIGRlc2NyaXB0b3IgaW4gdGhpcyBjb21wb3NpdGlvbi4iIiIKKyAgICAgICAgbGVhcm5lZCA9IFsKKyAgICAgICAgICAgIGNoaWxkCisgICAgICAgICAgICBmb3IgY2hpbGQgaW4gc2VsZi5hdG9taWNfbW9kZWwubW9kZWxzCisgICAgICAgICAgICBpZiBpc2luc3RhbmNlKGNoaWxkLCBEUEF0b21pY01vZGVsKQorICAgICAgICBdCisgICAgICAgIGlmIGxlbihsZWFybmVkKSAhPSAxOgorICAgICAgICAgICAgcmFpc2UgQXR0cmlidXRlRXJyb3IoIlRoaXMgbGluZWFyIG1vZGVsIGhhcyBubyB1bmlxdWUgbGVhcm5lZCBkZXNjcmlwdG9yLiIpCisgICAgICAgIHJldHVybiBsZWFybmVkWzBdLmRlc2NyaXB0b3IKKwogICAgIGRlZiBjb21wdXRlX2ZpdHRpbmdfaW5wdXRfc3RhdHMoCiAgICAgICAgIHNlbGYsIHNhbXBsZWRfZnVuYzogQ2FsbGFibGVbW10sIGxpc3RbZGljdF1dCiAgICAgKSAtPiBOb25lOgo=
+        | base64 -d | git apply -
+
+        .venv/bin/ruff check deepmd/pt_expt/model/dp_linear_model.py source/tests/pt_expt/model/test_dpa4c_zbl_bridging.py
+
+        .venv/bin/ruff format --check deepmd/pt_expt/model/dp_linear_model.py source/tests/pt_expt/model/test_dpa4c_zbl_bridging.py
+
+        .venv/bin/pytest -q source/tests/pt_expt/model/test_dpa4c_zbl_bridging.py
+        -k multitask_shared_descriptor --tb=short'
+    - name: Compare position and parameter derivatives to finite differences
+      run: 'echo IiIiQ2hlY2sgbWl4ZWQtaGVhZCBmb3JjZXMgYnkgY29vcmRpbmF0ZSBkaWZmZXJlbmNlcyBhbmQgZ3JhZGllbnRzIGJ5IGRpcmVjdGlvbmFsIGRlcml2YXRpdmVzLiIiIgpmcm9tIHBhdGhsaWIgaW1wb3J0IFBhdGgKaW1wb3J0IGpzb24sIHJ1bnB5CmltcG9ydCB0b3JjaApmcm9tIGRlZXBtZC5wdF9leHB0Lm1vZGVsLmdldF9tb2RlbCBpbXBvcnQgZ2V0X21vZGVsCmZyb20gZGVlcG1kLnB0X2V4cHQudHJhaW4ud3JhcHBlciBpbXBvcnQgTW9kZWxXcmFwcGVyCmZyb20gZGVlcG1kLnB0X2V4cHQudXRpbHMubXVsdGlfdGFzayBpbXBvcnQgcHJlcHJvY2Vzc19zaGFyZWRfcGFyYW1zCgpoZWxwZXJzID0gcnVucHkucnVuX3BhdGgoc3RyKFBhdGguY3dkKCkvInNvdXJjZS90ZXN0cy9wdF9leHB0L21vZGVsL3Rlc3RfZHBhNGNfemJsX2JyaWRnaW5nLnB5IikpCmV2YWx1YXRlLGNsdXN0ZXI9aGVscGVyc1siX2V2YWx1YXRlIl0saGVscGVyc1siX2NsdXN0ZXIiXQpwbGFpbixicmlkZ2VkPWhlbHBlcnNbIlBMQUlOX0NPTkZJRyJdLGhlbHBlcnNbIlpCTF9DT05GSUciXQpjb25maWcsbGlua3M9cHJlcHJvY2Vzc19zaGFyZWRfcGFyYW1zKHsic2hhcmVkX2RpY3QiOnsicmVwIjpwbGFpblsiZGVzY3JpcHRvciJdfSwibW9kZWxfZGljdCI6ewogICAgInBsYWluIjp7KipwbGFpbiwiZGVzY3JpcHRvciI6InJlcCJ9LCJ6YmwiOnsqKmJyaWRnZWQsImRlc2NyaXB0b3IiOiJyZXAifX19KQptb2RlbHM9e2s6Z2V0X21vZGVsKHYpLmV2YWwoKSBmb3Igayx2IGluIGNvbmZpZ1sibW9kZWxfZGljdCJdLml0ZW1zKCl9CmZvciBtb2RlbCBpbiBtb2RlbHMudmFsdWVzKCk6IGhlbHBlcnNbIl9wZXJ0dXJiIl0obW9kZWwpCk1vZGVsV3JhcHBlcihtb2RlbHMpLnNoYXJlX3BhcmFtcyhsaW5rcyx7InBsYWluIjouNSwiemJsIjouNX0pCnNoYXJlZD1saXN0KG1vZGVsc1sicGxhaW4iXS5nZXRfZGVzY3JpcHRvcigpLnBhcmFtZXRlcnMoKSkKdG9yY2gubWFudWFsX3NlZWQoMTgyKQpkaXJlY3Rpb249W3RvcmNoLnJhbmRuX2xpa2UocCkgZm9yIHAgaW4gc2hhcmVkXQpub3JtPXN1bSh4LnNxdWFyZSgpLnN1bSgpIGZvciB4IGluIGRpcmVjdGlvbikuc3FydCgpCmRpcmVjdGlvbj1beC9ub3JtIGZvciB4IGluIGRpcmVjdGlvbl0KZXBzPTFlLTUKcmVzdWx0cz1bXQpjbGFtcD1tb2RlbHNbInpibCJdLmdldF9kZXNjcmlwdG9yKCkuY29udGFjdF9jbGFtcApmaXhlZF9lZGdlcz1jbGFtcC5lZGdlcy5kZXRhY2goKS5jbG9uZSgpCmZpeGVkX2NvbnRhY3RzPWNsYW1wLmNvbnRhY3RzLmRldGFjaCgpLmNsb25lKCkKZm9yIGtleSxtb2RlbCBpbiBtb2RlbHMuaXRlbXMoKToKICAgIGZvciBkaXN0YW5jZSBpbiAoLjQsLjY1LDEuMSk6CiAgICAgICAgeD1jbHVzdGVyKGRpc3RhbmNlKQogICAgICAgIHByZWQ9ZXZhbHVhdGUobW9kZWwseCkKICAgICAgICBmX3ByZWQ9ZmxvYXQocHJlZFsiZm9yY2UiXVswLDEsMF0uZGV0YWNoKCkpCiAgICAgICAgeDE9eC5jb3B5KCk7eDFbMSwwXSs9ZXBzCiAgICAgICAgeDI9eC5jb3B5KCk7eDJbMSwwXS09ZXBzCiAgICAgICAgZl9udW09KGV2YWx1YXRlKG1vZGVsLHgyKVsiZW5lcmd5Il0uaXRlbSgpLWV2YWx1YXRlKG1vZGVsLHgxKVsiZW5lcmd5Il0uaXRlbSgpKS8oMiplcHMpCiAgICAgICAgZ3JhZHM9dG9yY2guYXV0b2dyYWQuZ3JhZChwcmVkWyJlbmVyZ3kiXS5zdW0oKSxzaGFyZWQsYWxsb3dfdW51c2VkPVRydWUpCiAgICAgICAgZGlyZWN0aW9uYWw9c3VtKChnKmQpLnN1bSgpLml0ZW0oKSBmb3IgZyxkIGluIHppcChncmFkcyxkaXJlY3Rpb24pIGlmIGcgaXMgbm90IE5vbmUpCiAgICAgICAgdmFsdWVzPVtdCiAgICAgICAgb3JpZ2luYWw9W3AuZGV0YWNoKCkuY2xvbmUoKSBmb3IgcCBpbiBzaGFyZWRdCiAgICAgICAgZm9yIHNpZ24gaW4gKDEsLTEpOgogICAgICAgICAgICB3aXRoIHRvcmNoLm5vX2dyYWQoKToKICAgICAgICAgICAgICAgIGZvciBwLHN0YXJ0LGQgaW4gemlwKHNoYXJlZCxvcmlnaW5hbCxkaXJlY3Rpb24pOnAuY29weV8oc3RhcnQrc2lnbiplcHMqZCkKICAgICAgICAgICAgdmFsdWVzLmFwcGVuZChldmFsdWF0ZShtb2RlbCx4KVsiZW5lcmd5Il0uaXRlbSgpKQogICAgICAgIHdpdGggdG9yY2gubm9fZ3JhZCgpOgogICAgICAgICAgICBmb3IgcCxzdGFydCBpbiB6aXAoc2hhcmVkLG9yaWdpbmFsKTpwLmNvcHlfKHN0YXJ0KQogICAgICAgIGRfbnVtPSh2YWx1ZXNbMF0tdmFsdWVzWzFdKS8oMiplcHMpCiAgICAgICAgZm9yIGV4cGVjdGVkLGFjdHVhbCBpbiAoKGZfcHJlZCxmX251bSksKGRpcmVjdGlvbmFsLGRfbnVtKSk6CiAgICAgICAgICAgIGFzc2VydCBhYnMoZXhwZWN0ZWQtYWN0dWFsKTwzZS01KzJlLTYqYWJzKGV4cGVjdGVkKSwoa2V5LGRpc3RhbmNlLGV4cGVjdGVkLGFjdHVhbCkKICAgICAgICBhc3NlcnQgYWJzKGRpcmVjdGlvbmFsKT4xZS05LCAoa2V5LGRpc3RhbmNlLGRpcmVjdGlvbmFsKQogICAgICAgIHJlc3VsdHMuYXBwZW5kKGRpY3QoYnJhbmNoPWtleSxkaXN0YW5jZT1kaXN0YW5jZSxlbmVyZ3k9cHJlZFsiZW5lcmd5Il0uaXRlbSgpLGZvcmNlPWZfcHJlZCxmb3JjZV9mZD1mX251bSx3ZWlnaHRfZ3JhZD1kaXJlY3Rpb25hbCx3ZWlnaHRfZmQ9ZF9udW0pKQp0b3JjaC50ZXN0aW5nLmFzc2VydF9jbG9zZShjbGFtcC5lZGdlcyxmaXhlZF9lZGdlcyxhdG9sPTAscnRvbD0wKQp0b3JjaC50ZXN0aW5nLmFzc2VydF9jbG9zZShjbGFtcC5jb250YWN0cyxmaXhlZF9jb250YWN0cyxhdG9sPTAscnRvbD0wKQpwcmludCgnUEhZU0lDU19SRVNVTFQnLGpzb24uZHVtcHMocmVzdWx0cyksZmx1c2g9VHJ1ZSkK
+        | base64 -d > /tmp/oracle.py
+
+        .venv/bin/python /tmp/oracle.py'
+    - name: Run DPA4C and general bridging tests
+      run: .venv/bin/pytest -q source/tests/pt_expt/model/test_dpa4c_zbl_bridging.py
+        source/tests/pt_expt/model/test_get_model_zbl.py --tb=short
